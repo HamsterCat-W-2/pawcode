@@ -9,6 +9,7 @@ PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 
 - 通过 `pi-ai` 支持 OpenAI、Anthropic、Google、OpenRouter、小米 MiMo 等供应商。
 - 支持自定义 OpenAI-compatible 服务，例如 Ollama、vLLM 和 LM Studio。
 - 统一不同供应商的 Tool Calling 消息格式。
+- 模型文本流式输出，并提供 thinking 状态提示。
 - `list_files`：递归查看项目文件。
 - `read_file`：按行读取文本文件。
 - `grep`：搜索代码并返回文件和行号。
@@ -96,6 +97,8 @@ pnpm dev
 pnpm dev "查看当前项目并解释目录结构"
 ```
 
+模型生成时会逐段显示文本；生成过程中按 `Ctrl+C` 可以取消当前请求。
+
 指定模型和最大轮数：
 
 ```bash
@@ -134,6 +137,7 @@ src/
 │   └── tool.ts
 ├── models/
 │   ├── model-adapter.ts
+│   ├── model-event.ts
 │   └── pi-ai-model-adapter.ts
 ├── runtime/
 │   ├── agent-event.ts
@@ -150,11 +154,14 @@ src/
 关键 seam：
 
 - `ModelAdapter` 是 PawCode 自己的稳定模型接口。
+- `ModelEvent` 将第三方流事件隔离为 PawCode 的文本、thinking、工具和完成事件。
 - `PiAiModelAdapter` 将 PawCode 消息、工具和响应转换为 `pi-ai` 类型。
 - Runtime 会保存 Adapter 返回的供应商原始消息，确保多轮工具调用不丢失 thinking signature。
 - `Tool` 统一内置工具和未来 MCP 工具。
 - `AgentRuntime` 只负责编排消息、模型和工具。
 - `AgentEvent` 让普通 CLI、TUI 和 JSON 输出复用同一运行时。
+
+流式输出的事件约束和验收标准见 [docs/streaming-output.md](docs/streaming-output.md)。
 
 ## 规划
 
@@ -164,7 +171,7 @@ v0.3：
 - 命令执行工具。
 - 权限确认和允许规则。
 - Git diff 与测试工作流。
-- 流式模型文本、thinking 和 Token 用量事件。
+- Token 用量展示。
 
 v0.4：
 

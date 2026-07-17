@@ -1,4 +1,5 @@
 import type { Message } from '../domain/message.js'
+import type { ModelResponse } from '../domain/model.js'
 import type { ModelAdapter } from '../models/model-adapter.js'
 import type { ToolContext } from '../tools/tool.js'
 import { ToolRegistry } from '../tools/tool-registry.js'
@@ -43,12 +44,33 @@ export class AgentRuntime {
       for (let turn = 1; turn <= this.options.maxTurns; turn += 1) {
         yield { type: 'turn_started', turn }
 
-        const response = await this.options.model.complete({
+        let response: ModelResponse | undefined
+
+        for await (const event of this.options.model.stream({
           // 传递快照，避免适配器持有内部数组后被后续消息追加所影响。
           messages: [...this.messages],
           tools: this.options.tools.definitions(),
           ...(signal ? { signal } : {}),
-        })
+        })) {
+          switch (event.type) {
+            case 'text_delta':
+              yield { type: 'text_delta', text: event.text }
+              break
+            case 'thinking_delta':
+              yield { type: 'thinking_delta', text: event.text }
+              break
+            case 'completed':
+              response = event.response
+              break
+            case 'tool_call':
+              // 工具只在完整 response 到达后统一执行，确保会话先保存 assistant 消息。
+              break
+          }
+        }
+
+        if (!response) {
+          throw new Error('模型流结束时缺少 completed 事件')
+        }
 
         this.messages.push({
           role: 'assistant',

@@ -1,4 +1,12 @@
-import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall, type Context } from '@earendil-works/pi-ai'
+import {
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxText,
+  fauxThinking,
+  fauxToolCall,
+  type Context,
+} from '@earendil-works/pi-ai'
 import { describe, expect, it } from 'vitest'
 import { PiAiModelAdapter } from '../src/models/pi-ai-model-adapter.js'
 import { AgentRuntime } from '../src/runtime/agent-runtime.js'
@@ -32,7 +40,7 @@ describe('PiAiModelAdapter', () => {
       }),
       (context) => {
         continuationContext = context
-        return fauxAssistantMessage('完成')
+        return fauxAssistantMessage([fauxThinking('整理工具结果'), fauxText('完成')])
       },
     ])
 
@@ -50,6 +58,8 @@ describe('PiAiModelAdapter', () => {
     const events = []
     for await (const event of runtime.run('开始')) events.push(event)
 
+    expect(events.some((event) => event.type === 'text_delta')).toBe(true)
+    expect(events.some((event) => event.type === 'thinking_delta')).toBe(true)
     expect(events.at(-1)).toEqual({ type: 'completed', text: '完成' })
     expect(continuationContext?.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'toolResult'])
     expect(continuationContext?.messages.at(-1)).toMatchObject({

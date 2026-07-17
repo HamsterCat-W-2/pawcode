@@ -91,25 +91,65 @@ async function runInteractive(runtime: AgentRuntime, provider: string, modelName
 }
 
 async function renderRun(runtime: AgentRuntime, prompt: string): Promise<void> {
-  for await (const event of runtime.run(prompt)) {
-    renderEvent(event)
+  const state: RenderState = { streamingText: false, thinkingShown: false }
+  const controller = new AbortController()
+  const cancel = () => controller.abort()
+  process.once('SIGINT', cancel)
+
+  try {
+    for await (const event of runtime.run(prompt, controller.signal)) {
+      renderEvent(event, state)
+    }
+  } finally {
+    process.removeListener('SIGINT', cancel)
   }
 }
 
-function renderEvent(event: AgentEvent): void {
+interface RenderState {
+  streamingText: boolean
+  thinkingShown: boolean
+}
+
+function renderEvent(event: AgentEvent, state: RenderState): void {
   switch (event.type) {
     case 'turn_started':
+      state.thinkingShown = false
+      return
+    case 'thinking_delta':
+      // 默认不展示模型的完整推理内容，只提示当前正在生成。
+      if (!state.thinkingShown && !state.streamingText) {
+        console.log('\n💭 思考中...')
+        state.thinkingShown = true
+      }
+      return
+    case 'text_delta':
+      if (!state.streamingText) {
+        stdout.write('\nPawCode > ')
+        state.streamingText = true
+      }
+      stdout.write(event.text)
       return
     case 'tool_started':
+      if (state.streamingText) stdout.write('\n')
+      state.streamingText = false
       console.log(`\n🔧 ${event.name} ${event.argumentsJson}`)
       return
     case 'tool_finished':
       console.log(`✓ ${event.name} 返回 ${event.result.length} 个字符`)
       return
     case 'completed':
-      console.log(`\nPawCode > ${event.text}\n`)
+      if (state.streamingText) {
+        // 完整文本已经由 text_delta 输出，这里只负责收尾，避免重复打印。
+        stdout.write('\n\n')
+        state.streamingText = false
+      } else {
+        // 某些 Provider 可能只给最终消息而不产生 text_delta，保留非流式兜底。
+        console.log(`\nPawCode > ${event.text}\n`)
+      }
       return
     case 'failed':
+      if (state.streamingText) stdout.write('\n')
+      state.streamingText = false
       console.error(`\n错误：${event.error.message}\n`)
   }
 }

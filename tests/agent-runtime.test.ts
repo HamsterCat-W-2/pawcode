@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ModelRequest, ModelResponse } from '../src/domain/model.js'
 import type { ModelAdapter } from '../src/models/model-adapter.js'
+import type { ModelEvent } from '../src/models/model-event.js'
 import { AgentRuntime } from '../src/runtime/agent-runtime.js'
 import type { Tool } from '../src/tools/tool.js'
 import { ToolRegistry } from '../src/tools/tool-registry.js'
@@ -11,12 +12,26 @@ class ScriptedModel implements ModelAdapter {
 
   constructor(private readonly responses: ModelResponse[]) {}
 
-  async complete(request: ModelRequest): Promise<ModelResponse> {
+  async *stream(request: ModelRequest): AsyncGenerator<ModelEvent> {
     this.requests.push(request)
     const response = this.responses[this.index]
     this.index += 1
     if (!response) throw new Error('测试模型没有更多响应')
-    return response
+
+    if (response.content) {
+      yield { type: 'text_delta', text: response.content }
+    }
+    for (const call of response.toolCalls) {
+      yield { type: 'tool_call', call }
+    }
+    yield { type: 'completed', response }
+  }
+}
+
+class FailingModel implements ModelAdapter {
+  async *stream(): AsyncGenerator<ModelEvent> {
+    yield { type: 'text_delta', text: '部分回答' }
+    throw new Error('流连接失败')
   }
 }
 
@@ -64,6 +79,7 @@ describe('AgentRuntime', () => {
       'tool_started',
       'tool_finished',
       'turn_started',
+      'text_delta',
       'completed',
     ])
     expect(model.requests[1]?.messages.at(-1)).toEqual({
@@ -95,5 +111,23 @@ describe('AgentRuntime', () => {
     for await (const event of runtime.run('循环')) events.push(event)
 
     expect(events.at(-1)?.type).toBe('failed')
+  })
+
+  it('保留已产生的 delta 并把流错误转换为失败事件', async () => {
+    const runtime = new AgentRuntime({
+      model: new FailingModel(),
+      tools: new ToolRegistry([]),
+      toolContext: { workspace: process.cwd(), maxOutputChars: 10_000 },
+      maxTurns: 1,
+    })
+
+    const events = []
+    for await (const event of runtime.run('开始')) events.push(event)
+
+    expect(events.map((event) => event.type)).toEqual(['turn_started', 'text_delta', 'failed'])
+    expect(events.at(-1)).toMatchObject({
+      type: 'failed',
+      error: new Error('流连接失败'),
+    })
   })
 })

@@ -9,6 +9,7 @@ import {
   type Models,
   type TSchema,
   type Tool as PiTool,
+  type ToolCall as PiToolCall,
   type Usage,
 } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
@@ -17,6 +18,7 @@ import type { Message } from '../domain/message.js'
 import type { ModelRequest, ModelResponse } from '../domain/model.js'
 import type { ToolCall, ToolDefinition } from '../domain/tool.js'
 import type { ModelAdapter } from './model-adapter.js'
+import type { ModelEvent } from './model-event.js'
 
 export interface PiAiModelAdapterOptions {
   provider: string
@@ -56,25 +58,50 @@ export class PiAiModelAdapter implements ModelAdapter {
     this.selectedModel = selectedModel
   }
 
-  async complete(request: ModelRequest): Promise<ModelResponse> {
+  async *stream(request: ModelRequest): AsyncGenerator<ModelEvent> {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs)
+    let didTimeout = false
+    const timeout = setTimeout(() => {
+      didTimeout = true
+      controller.abort()
+    }, this.timeoutMs)
     const forwardAbort = () => controller.abort()
     request.signal?.addEventListener('abort', forwardAbort, { once: true })
 
     try {
-      const response = await this.models.complete(this.selectedModel, toPiContext(request, this.selectedModel), {
+      const stream = this.models.stream(this.selectedModel, toPiContext(request, this.selectedModel), {
         signal: controller.signal,
         timeoutMs: this.timeoutMs,
         ...(this.options.apiKey ? { apiKey: this.options.apiKey } : {}),
       })
 
-      // pi-ai 使用结构化错误消息而不是抛出请求错误。
-      if (response.stopReason === 'error' || response.stopReason === 'aborted') {
-        throw new Error(response.errorMessage ?? `模型请求${response.stopReason}`)
+      for await (const event of stream) {
+        switch (event.type) {
+          case 'text_delta':
+            yield { type: 'text_delta', text: event.delta }
+            break
+          case 'thinking_delta':
+            yield { type: 'thinking_delta', text: event.delta }
+            break
+          case 'toolcall_end':
+            // 只有 end 事件才包含完整参数，避免 Runtime 执行半截 JSON。
+            yield { type: 'tool_call', call: fromPiToolCall(event.toolCall) }
+            break
+          case 'done':
+            // done 中的完整消息用于会话历史；delta 只负责实时展示。
+            yield { type: 'completed', response: fromPiResponse(event.message) }
+            break
+          case 'error':
+            // pi-ai 把请求失败编码成流事件，这里恢复成异常交给 Runtime 统一处理。
+            if (event.reason === 'aborted' && request.signal?.aborted) {
+              throw new Error('模型请求已取消')
+            }
+            if (event.reason === 'aborted' && didTimeout) {
+              throw new Error(`模型请求超过 ${this.timeoutMs}ms`)
+            }
+            throw new Error(event.error.errorMessage ?? `模型请求${event.reason}`)
+        }
       }
-
-      return fromPiResponse(response)
     } finally {
       clearTimeout(timeout)
       request.signal?.removeEventListener('abort', forwardAbort)
@@ -237,22 +264,25 @@ function fromPiResponse(response: AssistantMessage): ModelResponse {
     .map((content) => content.text)
     .join('')
   // pi-ai 的对象参数转换为 PawCode ToolRegistry 当前使用的 JSON 字符串。
-  const toolCalls: ToolCall[] = response.content
-    .filter((content) => content.type === 'toolCall')
-    .map((call) => ({
-      id: call.id,
-      type: 'function',
-      function: {
-        name: call.name,
-        arguments: JSON.stringify(call.arguments),
-      },
-    }))
+  const toolCalls: ToolCall[] = response.content.filter((content) => content.type === 'toolCall').map(fromPiToolCall)
 
   return {
     content: text || null,
     toolCalls,
     // 简化后的响应会丢弃部分信息，因此同时保存原始消息供下一轮完整重放。
     providerData: response,
+  }
+}
+
+/** 把单个完整 pi-ai ToolCall 转成 PawCode 的 OpenAI 风格 ToolCall。 */
+function fromPiToolCall(call: PiToolCall): ToolCall {
+  return {
+    id: call.id,
+    type: 'function',
+    function: {
+      name: call.name,
+      arguments: JSON.stringify(call.arguments),
+    },
   }
 }
 
