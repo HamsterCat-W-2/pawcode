@@ -13,7 +13,9 @@ import {
 } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { builtinModels } from '@earendil-works/pi-ai/providers/all'
-import type { Message, ModelRequest, ModelResponse, ToolCall, ToolDefinition } from '../domain/types.js'
+import type { Message } from '../domain/message.js'
+import type { ModelRequest, ModelResponse } from '../domain/model.js'
+import type { ToolCall, ToolDefinition } from '../domain/tool.js'
 import type { ModelAdapter } from './model-adapter.js'
 
 export interface PiAiModelAdapterOptions {

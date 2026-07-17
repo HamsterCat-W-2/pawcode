@@ -1,4 +1,4 @@
-import type { Message } from '../domain/types.js'
+import type { Message } from '../domain/message.js'
 import type { ModelAdapter } from '../models/model-adapter.js'
 import type { ToolContext } from '../tools/tool.js'
 import { ToolRegistry } from '../tools/tool-registry.js'

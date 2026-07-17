@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '../domain/types.js'
+import type { ToolDefinition } from '../domain/tool.js'
 
 export interface ToolContext {
   workspace: string

@@ -129,7 +129,9 @@ src/
 ├── config/
 │   └── config.ts
 ├── domain/
-│   └── types.ts
+│   ├── message.ts
+│   ├── model.ts
+│   └── tool.ts
 ├── models/
 │   ├── model-adapter.ts
 │   └── pi-ai-model-adapter.ts

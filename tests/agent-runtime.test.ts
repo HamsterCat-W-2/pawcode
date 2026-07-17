@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ModelRequest, ModelResponse } from '../src/domain/types.js'
+import type { ModelRequest, ModelResponse } from '../src/domain/model.js'
 import type { ModelAdapter } from '../src/models/model-adapter.js'
 import { AgentRuntime } from '../src/runtime/agent-runtime.js'
 import type { Tool } from '../src/tools/tool.js'

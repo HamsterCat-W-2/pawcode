@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '../domain/types.js'
+import type { ToolDefinition } from '../domain/tool.js'
 import type { Tool, ToolContext } from './tool.js'
 
 export class ToolRegistry {
