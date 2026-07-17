@@ -129,13 +129,22 @@ function createOpenAICompatibleModels(options: PiAiModelAdapterOptions & { baseU
   return models
 }
 
+/**
+ * 把 PawCode 的完整模型请求转换为 pi-ai Context。
+ *
+ * 为什么需要转换：AgentRuntime 使用 PawCode 自己的 Domain 类型，以免直接依赖
+ * pi-ai；而 pi-ai 要求 systemPrompt、messages、tools 分别存放。这个函数就是两层
+ * 之间的协议边界，供应商 SDK 的格式变化应被限制在 Adapter 内部。
+ */
 function toPiContext(request: ModelRequest, model: Model<Api>): Context {
+  // PawCode 把 system prompt 当作普通消息保存，pi-ai 则使用独立字段。
   const systemPrompt = request.messages
     .filter((message) => message.role === 'system')
     .map((message) => message.content ?? '')
     .filter(Boolean)
     .join('\n\n')
 
+  // system 消息已经提取，其余消息再按照角色逐条转换。
   const messages = request.messages
     .filter((message) => message.role !== 'system')
     .map((message, index, allMessages) => toPiMessage(message, index, allMessages, model))
@@ -143,17 +152,28 @@ function toPiContext(request: ModelRequest, model: Model<Api>): Context {
   return {
     ...(systemPrompt ? { systemPrompt } : {}),
     messages,
+    // 工具定义同样属于两个协议，因此集中在这里转换，Runtime 不需要感知 pi-ai。
     tools: request.tools.map(toPiTool),
   }
 }
 
+/**
+ * 把一条 PawCode Message 转换为对应的 pi-ai Message。
+ *
+ * 两边的角色命名和字段结构不完全一致：例如 PawCode 使用 `tool`，pi-ai 使用
+ * `toolResult`；PawCode 的工具参数是 JSON 字符串，pi-ai 使用对象。
+ */
 function toPiMessage(message: Message, index: number, messages: Message[], model: Model<Api>): PiMessage {
   if (message.role === 'user') {
+    // pi-ai 消息要求 timestamp；PawCode 当前没有保存消息时间，因此在发送时补上。
     return { role: 'user', content: message.content ?? '', timestamp: Date.now() }
   }
 
   if (message.role === 'assistant') {
+    // 优先重放模型最初返回的完整消息，保留 thinking signature、responseId 等信息。
     if (isPiAssistantMessage(message.providerData)) return message.providerData
+
+    // 旧会话、测试数据或其他 Adapter 生成的消息可能没有 providerData。
     return createFallbackAssistantMessage(message, model)
   }
 
@@ -162,8 +182,10 @@ function toPiMessage(message: Message, index: number, messages: Message[], model
     return {
       role: 'toolResult',
       toolCallId,
+      // PawCode 的 tool 消息只保存调用 ID，所以需要从前面的 assistant 消息查回名称。
       toolName: findToolName(messages.slice(0, index), toolCallId),
       content: [{ type: 'text', text: message.content ?? '' }],
+      // 当前 Domain 没有独立 isError 字段，只能根据 ToolRegistry 的错误前缀推断。
       isError: message.content?.startsWith('工具执行失败：') ?? false,
       timestamp: Date.now(),
     }
@@ -173,6 +195,12 @@ function toPiMessage(message: Message, index: number, messages: Message[], model
   return { role: 'user', content: message.content ?? '', timestamp: Date.now() }
 }
 
+/**
+ * 在缺少原始 providerData 时，构造一条最小可用的 pi-ai AssistantMessage。
+ *
+ * 这是兼容旧数据的兜底路径，不代表真实供应商响应：Token 用量只能填零，且无法
+ * 恢复已经丢失的 thinking signature。正常在线对话会直接重用 providerData。
+ */
 function createFallbackAssistantMessage(message: Message, model: Model<Api>): AssistantMessage {
   const toolCalls = message.tool_calls ?? []
   return {
@@ -183,6 +211,7 @@ function createFallbackAssistantMessage(message: Message, model: Model<Api>): As
         type: 'toolCall' as const,
         id: call.id,
         name: call.function.name,
+        // PawCode 采用 OpenAI 风格 JSON 字符串；pi-ai 的 arguments 必须是对象。
         arguments: parseArguments(call.function.arguments),
       })),
     ],
@@ -195,11 +224,19 @@ function createFallbackAssistantMessage(message: Message, model: Model<Api>): As
   }
 }
 
+/**
+ * 把 pi-ai 的统一 AssistantMessage 转换回 PawCode ModelResponse。
+ *
+ * pi-ai 使用内容块数组表达文本、thinking 和工具调用；PawCode Runtime 当前只消费
+ * 拼接后的文本和 OpenAI 风格 ToolCall，因此需要在返回 Runtime 前做一次投影。
+ */
 function fromPiResponse(response: AssistantMessage): ModelResponse {
+  // 一个响应可能包含多个 text block，PawCode 当前将它们合并成一段文本。
   const text = response.content
     .filter((content) => content.type === 'text')
     .map((content) => content.text)
     .join('')
+  // pi-ai 的对象参数转换为 PawCode ToolRegistry 当前使用的 JSON 字符串。
   const toolCalls: ToolCall[] = response.content
     .filter((content) => content.type === 'toolCall')
     .map((call) => ({
@@ -214,11 +251,15 @@ function fromPiResponse(response: AssistantMessage): ModelResponse {
   return {
     content: text || null,
     toolCalls,
-    // 保存完整原始消息，以便下一轮重放供应商签名和 reasoning 信息。
+    // 简化后的响应会丢弃部分信息，因此同时保存原始消息供下一轮完整重放。
     providerData: response,
   }
 }
 
+/**
+ * 把 PawCode 的 OpenAI 风格 ToolDefinition 转换为 pi-ai Tool。
+ * 两者表达的是同一份 JSON Schema，但外层字段结构不同。
+ */
 function toPiTool(definition: ToolDefinition): PiTool {
   return {
     name: definition.function.name,
@@ -228,6 +269,10 @@ function toPiTool(definition: ToolDefinition): PiTool {
   }
 }
 
+/**
+ * 根据 toolCallId 从历史 assistant 消息中反向查找工具名称。
+ * 之所以需要查找，是因为 PawCode 的 tool 结果消息目前没有直接保存 toolName。
+ */
 function findToolName(messages: Message[], toolCallId: string): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const call = messages[index]?.tool_calls?.find((item) => item.id === toolCallId)
@@ -236,6 +281,10 @@ function findToolName(messages: Message[], toolCallId: string): string {
   return 'unknown'
 }
 
+/**
+ * 把 PawCode ToolCall 中的 JSON 字符串参数解析成 pi-ai 需要的对象。
+ * 模型偶尔可能返回非法 JSON；兜底为空对象，让后续工具参数校验给出业务错误。
+ */
 function parseArguments(argumentsJson: string): Record<string, unknown> {
   try {
     const value: unknown = JSON.parse(argumentsJson)
@@ -245,6 +294,10 @@ function parseArguments(argumentsJson: string): Record<string, unknown> {
   }
 }
 
+/**
+ * providerData 在 PawCode Domain 中是 unknown，以保持 Domain 不依赖 pi-ai。
+ * 在重放之前必须先进行最小运行时检查，TypeScript 才能安全地把它当作 AssistantMessage。
+ */
 function isPiAssistantMessage(value: unknown): value is AssistantMessage {
   return (
     isRecord(value) &&
@@ -254,10 +307,14 @@ function isPiAssistantMessage(value: unknown): value is AssistantMessage {
   )
 }
 
+/** 判断 unknown 是否为普通对象，供 JSON 参数和 providerData 的类型收窄复用。 */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/**
+ * pi-ai AssistantMessage 强制要求 Usage；fallback 消息没有真实计费数据，因此使用零值。
+ */
 function emptyUsage(): Usage {
   return {
     input: 0,
