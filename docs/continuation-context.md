@@ -5,16 +5,16 @@
 ## 当前状态
 
 - 项目：Node.js、TypeScript、pnpm 编写的终端 AI 编程 Agent。
-- 版本：v0.3。
+- 版本：v0.4。
 - 路径：`/Users/guoxuanloveweiyan/Documents/guoxuan/programe/pawcode`。
-- 分支：`add_pi_ai_adapter`。
-- 最新提交：`2053e6c feat: add safe write and command workflows`。
-- 该提交完成 v0.3 技术文档、实现、审查注释和测试；当前本地分支与远端已同步。后续仍以实际 Git 状态为准。
+- 分支：`codex/session-persistence-resume`。
+- 当前分支 HEAD 包含 v0.4 会话持久化、恢复、上下文压缩和 NDJSON 输出；具体提交号及工作区状态继续以 `git log -1` 和 `git status` 为准。
 - `.env` 已忽略，绝不能提交密钥。
 
 关键历史：
 
 ```text
+9e5d599 docs: refresh continuation context
 2053e6c feat: add safe write and command workflows
 995ab48 chore: chore
 25c8787 docs: add docs
@@ -37,8 +37,14 @@ c66abe8 refactor: split domain types by concept
 - 工作区、符号链接和 `.git` 元数据保护。
 - 命令使用 `spawn(command, args, { shell: false })`，支持 cwd、超时、取消和输出截断。
 - 危险程序、Shell command 选项和破坏性 Git 子命令硬拒绝。
+- 项目级 `.pawcode/sessions` 会话保存、列表、恢复和工作区校验。
+- Session schema v1、Zod 磁盘校验、`0600` 权限和临时文件原子替换。
+- Claude Code 风格会话入口：`--continue/-c`、`--resume/-r [id|name]`、`--fork-session`、`--name/-n` 和 `--list-sessions`。
+- 交互会话命令：`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。
+- 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
+- `--json` 严格 NDJSON；stdout 不混入人类装饰输出，非交互副作用默认拒绝。
 
-v0.3 设计与验收标准见 [v0.3-design.md](./v0.3-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
+设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
 
 ## 必须保持的架构边界
 
@@ -59,6 +65,18 @@ ToolRegistry
 PermissionManager
  ↓ allow
 文件、命令与 Git 工具
+
+CLI / Runtime
+ ↓ messages snapshot
+SessionManager
+ ↓ schema validation + atomic rename
+.pawcode/sessions/<id>.json
+
+AgentRuntime
+ ↓ estimated context budget
+ContextCompactor
+ ↓ ModelAdapter summary
+历史摘要 + 最近完整轮次
 ```
 
 1. `AgentRuntime` 不得直接依赖 `pi-ai` 类型或保存 `pi-ai Context`。
@@ -67,6 +85,14 @@ PermissionManager
 4. PawCode 工具参数仍使用 OpenAI 风格 JSON 字符串；`pi-ai` 对象参数只在 Adapter 中转换。
 5. 副作用工具必须通过 `ToolRegistry` 和 `PermissionManager`，不能直接执行或绕过授权。
 6. 写工具只接受工作区相对路径；命令不经过 Shell；未经用户明确要求不提交或推送。
+
+## 协作与代码审查约定
+
+- 后续新增或修改代码必须补充便于 review 的中文注释。
+- 注释重点说明设计原因、协议或安全边界、非显然控制流，以及失败与兼容策略。
+- 不给显而易见的赋值和语法逐行加注释，避免注释噪声掩盖关键逻辑。
+- 修改实现行为时同步更新相关注释，不能保留与代码不一致的过时说明。
+- 关键模块和公共接口应有职责说明；复杂分支应解释“为什么这样处理”。
 
 关键目录：
 
@@ -82,11 +108,18 @@ src/
 │   ├── model-adapter.ts           Runtime 依赖的稳定接口
 │   ├── model-event.ts             供应商无关流事件
 │   └── pi-ai-model-adapter.ts     唯一 pi-ai 翻译层
+├── output/
+│   └── json-renderer.ts            AgentEvent → NDJSON
 ├── permissions/
 │   └── permission-manager.ts      allow / ask / deny 与会话规则
 ├── runtime/
 │   ├── agent-event.ts             CLI/TUI 可复用事件
-│   └── agent-runtime.ts           多轮模型—工具编排
+│   ├── agent-runtime.ts           多轮模型—工具编排与保存钩子
+│   └── context-compactor.ts       Token 预算、安全切分与摘要
+├── sessions/
+│   ├── session-schema.ts          版本化磁盘 schema
+│   ├── session-store.ts           项目隔离、校验与原子存储
+│   └── session-manager.ts         活跃会话状态与累计 usage
 └── tools/
     ├── tool-registry.ts           工具查找、权限入口、错误与截断
     ├── workspace-files.ts         路径、符号链接和文件安全
@@ -207,6 +240,17 @@ Tool.execute()
 
 `git_diff` 是只读工具，并行读取 `git status --short` 与 `git diff --no-ext-diff`。系统提示要求 Agent 修改前读文件，修改后检查 diff，再按项目脚本运行格式、类型、测试和构建；未经明确要求不得提交或推送。
 
+### v0.4 会话、压缩与 JSON
+
+- 会话只存当前项目 `.pawcode/sessions`；记录并校验 workspace `realpath`，不同项目不能恢复。
+- 会话保存 provider/model、PawCode messages、`providerData`、累计 usage 和运行状态，但绝不保存 API Key、环境变量或权限规则。
+- 保存使用同目录临时文件后 `rename`，文件权限为 `0600`；损坏会话在列表中跳过，显式恢复时报告错误。
+- 恢复默认沿用会话 provider/model；显式覆盖会警告兼容风险。只有 `api + provider + model` 完全一致时才重放 `providerData`，否则根据 PawCode `content + tool_calls` 重建消息；Git 分支变化只警告不拒绝。
+- `ContextCompactor` 只在完整用户轮次边界切分，摘要失败则保留全部原消息继续运行。
+- 摘要 usage 计入当前 run；压缩只处理下一请求的输入，不截断当前模型输出。
+- `--json` stdout 每行都是 schema version 1 的 JSON 事件；错误对象显式转换，诊断和恢复警告写 stderr。
+- JSON 模式不询问权限，只接受 `--allow-write` 和 `--allow-command` 预授权。
+
 ## 配置与运行
 
 要求 Node.js `>=22.19.0`、pnpm 11。
@@ -217,6 +261,8 @@ MODEL_NAME=模型ID
 MODEL_API_KEY=模型服务密钥
 MAX_AGENT_TURNS=10
 MAX_TOOL_OUTPUT_CHARS=20000
+CONTEXT_COMPACT_THRESHOLD=0.8
+CONTEXT_KEEP_RECENT_TOKENS=20000
 ```
 
 `MODEL_BASE_URL` 仅用于 Ollama、vLLM、代理等自定义 OpenAI-compatible 服务。项目推荐统一使用 `MODEL_API_KEY`，但仍兼容 `pi-ai` 原生供应商环境变量。
@@ -225,6 +271,11 @@ MAX_TOOL_OUTPUT_CHARS=20000
 pnpm dev
 pnpm dev "解释当前项目架构"
 pnpm dev --allow-write --allow-command "pnpm test" "修复问题并验证"
+pnpm dev --continue
+pnpm dev --resume
+pnpm dev --resume auth-refactor --fork-session
+pnpm dev --list-sessions
+pnpm dev --json "检查项目"
 ```
 
 交互模式会询问副作用权限。单次非交互模式必须通过 `--allow-write` 或可重复的 `--allow-command <prefix>` 显式授权。
@@ -260,18 +311,29 @@ pnpm build
 
 `tsx` 在受限沙箱中可能因无法创建 IPC 管道而报 `EPERM`，构建后的 `node dist/cli.js` 可正常运行。
 
+当前 v0.4 工作区验证：
+
+- Prettier、TypeScript 和构建通过。
+- 10 个测试文件、32 个测试通过。
+- `node dist/cli.js --version` 输出 `0.4.0`。
+- 构建后 `--list-sessions --json` 输出可解析的空 sessions 事件。
+- JSON 启动错误和缺少 prompt 错误均只输出合法 JSON 行。
+- `git diff --check` 通过。
+
 ## 下一步
 
-1. 使用真实小米 MiMo Token Plan 手工验证流式输出、usage、成本和 stop reason。
-2. 手工验收交互权限、文件写入/补丁、命令取消、非交互默认拒绝和显式 allow 规则。
-3. v0.4：会话持久化与恢复、上下文压缩、JSON 输出。
-4. v0.5：MCP Client、Hooks、自定义命令和子 Agent。
+1. 使用真实模型创建并 `/rename` 会话，退出后分别用 `--continue`、`--resume` 选择器、`--resume <id|name>` 和 `/resume` 验证连续对话。
+2. 验证 `--fork-session` 与 `/branch` 产生新 ID、保留原历史且不继承会话权限规则。
+3. 将压缩阈值临时调低，人工确认 `context_compacted`、摘要质量、usage 累加和恢复后的压缩历史。
+4. 验证 `--json` 长回答、工具调用、权限拒绝与显式 allow 的每行 JSON。
+5. 人工验收通过后提交 v0.4，并按需要合并/推送。
+6. v0.5：MCP Client、Hooks、自定义命令和子 Agent。
 
 ## 新对话起始提示
 
 ```text
-请先阅读 docs/continuation-context.md，并按需阅读 docs/v0.3-design.md 和
-docs/streaming-output.md，然后检查 git status --short --branch。保持 PawCode
+请先阅读 docs/continuation-context.md，并按需阅读 docs/v0.4-design.md、
+docs/v0.3-design.md 和 docs/streaming-output.md，然后检查 git status --short --branch。保持 PawCode
 Domain 与 PiAiModelAdapter 的边界；所有副作用必须经过 ToolRegistry 和
 PermissionManager。修改后运行格式、类型、测试和构建验证。
 ```

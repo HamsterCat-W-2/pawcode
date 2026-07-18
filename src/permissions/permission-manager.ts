@@ -64,6 +64,10 @@ export class PermissionManager {
     if (confirmation === 'allow_once') return { allowed: true }
     return { allowed: false, reason: '用户拒绝了该操作' }
   }
+
+  clearSessionRules(): void {
+    this.sessionRules.clear()
+  }
 }
 
 function ruleKey(request: PermissionRequest): string {

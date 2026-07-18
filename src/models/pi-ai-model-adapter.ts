@@ -37,6 +37,7 @@ export interface PiAiModelAdapterOptions {
  * Runtime 继续依赖 PawCode 自己的 ModelAdapter，不感知任何供应商类型。
  */
 export class PiAiModelAdapter implements ModelAdapter {
+  readonly contextWindow: number
   private readonly models: Models
   private readonly selectedModel: Model<Api>
   private readonly timeoutMs: number
@@ -56,6 +57,7 @@ export class PiAiModelAdapter implements ModelAdapter {
       throw new Error(`pi-ai 中找不到模型 ${options.provider}/${options.model}${hint}`)
     }
     this.selectedModel = selectedModel
+    this.contextWindow = selectedModel.contextWindow
   }
 
   async *stream(request: ModelRequest): AsyncGenerator<ModelEvent> {
@@ -197,10 +199,10 @@ function toPiMessage(message: Message, index: number, messages: Message[], model
   }
 
   if (message.role === 'assistant') {
-    // 优先重放模型最初返回的完整消息，保留 thinking signature、responseId 等信息。
-    if (isPiAssistantMessage(message.providerData)) return message.providerData
+    // 只有 API、供应商和模型完全一致时才重放签名与 responseId；跨模型复用可能被供应商拒绝。
+    if (isPiAssistantMessageForModel(message.providerData, model)) return message.providerData
 
-    // 旧会话、测试数据或其他 Adapter 生成的消息可能没有 providerData。
+    // 缺少 providerData 或恢复时切换了模型，则使用 PawCode 可移植字段重建消息。
     return createFallbackAssistantMessage(message, model)
   }
 
@@ -354,6 +356,15 @@ function isPiAssistantMessage(value: unknown): value is AssistantMessage {
     value.role === 'assistant' &&
     Array.isArray(value.content) &&
     typeof value.stopReason === 'string'
+  )
+}
+
+function isPiAssistantMessageForModel(value: unknown, model: Model<Api>): value is AssistantMessage {
+  return (
+    isPiAssistantMessage(value) &&
+    value.api === model.api &&
+    value.provider === model.provider &&
+    value.model === model.id
   )
 }
 

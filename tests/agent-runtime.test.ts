@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ModelRequest, ModelResponse } from '../src/domain/model.js'
 import type { ModelAdapter } from '../src/models/model-adapter.js'
 import type { ModelEvent } from '../src/models/model-event.js'
 import { AgentRuntime } from '../src/runtime/agent-runtime.js'
+import { ContextCompactor } from '../src/runtime/context-compactor.js'
 import type { Tool } from '../src/tools/tool.js'
 import { ToolRegistry } from '../src/tools/tool-registry.js'
 
@@ -33,6 +34,10 @@ class FailingModel implements ModelAdapter {
     yield { type: 'text_delta', text: '部分回答' }
     throw new Error('流连接失败')
   }
+}
+
+class CompactingModel extends ScriptedModel {
+  readonly contextWindow = 120
 }
 
 const echoTool: Tool = {
@@ -182,5 +187,60 @@ describe('AgentRuntime', () => {
         cost: { total: 0.103 },
       },
     })
+  })
+
+  it('压缩旧历史、保存新消息并把摘要用量计入本轮', async () => {
+    const model = new CompactingModel([
+      {
+        content: '旧历史摘要',
+        toolCalls: [],
+        usage: {
+          inputTokens: 20,
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          totalTokens: 25,
+        },
+      },
+      {
+        content: '当前回答',
+        toolCalls: [],
+        usage: {
+          inputTokens: 10,
+          outputTokens: 3,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          totalTokens: 13,
+        },
+        stopReason: 'stop',
+      },
+    ])
+    const onMessagesChanged = vi.fn(async () => undefined)
+    const onContextCompacted = vi.fn(async () => undefined)
+    const runtime = new AgentRuntime({
+      model,
+      tools: new ToolRegistry([]),
+      toolContext: { workspace: process.cwd(), maxOutputChars: 10_000 },
+      maxTurns: 1,
+      initialMessages: [
+        { role: 'system', content: '系统提示' },
+        { role: 'user', content: '很长的旧问题'.repeat(30) },
+        { role: 'assistant', content: '旧回答' },
+        { role: 'user', content: '最近问题' },
+        { role: 'assistant', content: '最近回答' },
+      ],
+      compactor: new ContextCompactor({ model, threshold: 0.5, keepRecentTokens: 30 }),
+      onMessagesChanged,
+      onContextCompacted,
+    })
+
+    const events = []
+    for await (const event of runtime.run('当前问题')) events.push(event)
+
+    expect(events.map((event) => event.type)).toEqual(['context_compacted', 'turn_started', 'text_delta', 'completed'])
+    expect(events.at(-1)).toMatchObject({ type: 'completed', usage: { totalTokens: 38 } })
+    expect(runtime.messagesSnapshot()[1]?.content).toContain('[PawCode 历史摘要]')
+    expect(onMessagesChanged).toHaveBeenCalled()
+    expect(onContextCompacted).toHaveBeenCalledOnce()
   })
 })

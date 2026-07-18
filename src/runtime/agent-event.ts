@@ -6,5 +6,12 @@ export type AgentEvent =
   | { type: 'thinking_delta'; text: string }
   | { type: 'tool_started'; name: string; argumentsJson: string }
   | { type: 'tool_finished'; name: string; result: string }
+  | {
+      type: 'context_compacted'
+      removedMessages: number
+      estimatedTokensBefore: number
+      estimatedTokensAfter: number
+    }
+  | { type: 'context_compaction_failed'; error: Error }
   | { type: 'completed'; text: string; usage?: ModelUsage; stopReason?: string }
   | { type: 'failed'; error: Error }

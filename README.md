@@ -1,6 +1,6 @@
 # PawCode
 
-PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 Agent。当前 v0.3 可以在统一权限控制下读取和修改项目、运行命令并检查 Git 差异，通过 `pi-ai` 兼容多个模型供应商，同时保留自己的 Agent Runtime、工具系统和安全边界。
+PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 Agent。当前 v0.4 可以在统一权限控制下读写项目、执行命令、持久化项目级会话、压缩长上下文并输出 NDJSON，通过 `pi-ai` 兼容多个模型供应商，同时保留自己的 Agent Runtime、工具系统和安全边界。
 
 ## 当前能力
 
@@ -21,6 +21,9 @@ PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 
 - 写入和命令的 allow、ask、deny 权限决策。
 - 最大 Agent 轮数和工具输出限制。
 - `/clear`、`/status`、`/exit` 命令。
+- 项目内 `.pawcode/sessions` 会话保存、列表与恢复。
+- 长上下文按完整用户轮次压缩，不拆分工具调用与结果。
+- 严格 NDJSON 输出模式。
 - 通过事件流分离 Agent Runtime 与终端展示。
 
 ## 环境要求
@@ -56,6 +59,8 @@ MODEL_NAME=gpt-4.1-mini
 MODEL_API_KEY=你的APIKey
 MAX_AGENT_TURNS=10
 MAX_TOOL_OUTPUT_CHARS=20000
+CONTEXT_COMPACT_THRESHOLD=0.8
+CONTEXT_KEEP_RECENT_TOKENS=20000
 ```
 
 小米 MiMo Token Plan（中国区）：
@@ -118,6 +123,27 @@ pnpm dev --allow-write --allow-command "pnpm test" "修复问题并运行测试"
 pnpm dev --provider xiaomi-token-plan-cn --model mimo-v2.5 --max-turns 6 "解释 Agent Runtime"
 ```
 
+会话默认保存在当前项目的 `.pawcode/sessions`。恢复最近或指定会话：
+
+```bash
+pnpm dev --continue
+pnpm dev --resume
+pnpm dev --resume <session-id-or-name>
+pnpm dev --resume auth-refactor --fork-session
+pnpm dev --list-sessions
+```
+
+`--continue/-c` 恢复最近会话；`--resume/-r` 无参数打开编号选择器，有参数时按 ID 或 `/rename` 设置的名称恢复；`--fork-session` 复制历史并生成新会话 ID。交互模式还提供 `/new`、`/sessions`、`/resume [id|name]`、`/rename [name]` 和 `/branch [name]`。不同工作区的会话不能互相恢复；切换 Git 分支时会显示警告。
+
+机器调用使用 NDJSON：
+
+```bash
+pnpm dev --json "检查当前项目"
+pnpm dev --list-sessions --json
+```
+
+JSON 模式 stdout 每行都是可解析事件，不输出颜色、Emoji 或权限询问。副作用默认拒绝，需要通过 `--allow-write` 或 `--allow-command` 预授权。
+
 ## 检查、测试与构建
 
 ```bash
@@ -152,11 +178,18 @@ src/
 │   ├── model-adapter.ts
 │   ├── model-event.ts
 │   └── pi-ai-model-adapter.ts
+├── output/
+│   └── json-renderer.ts
 ├── permissions/
 │   └── permission-manager.ts
 ├── runtime/
 │   ├── agent-event.ts
-│   └── agent-runtime.ts
+│   ├── agent-runtime.ts
+│   └── context-compactor.ts
+├── sessions/
+│   ├── session-schema.ts
+│   ├── session-store.ts
+│   └── session-manager.ts
 └── tools/
     ├── tool.ts
     ├── tool-registry.ts
@@ -181,16 +214,12 @@ src/
 - `PermissionManager` 是所有副作用工具的统一 allow、ask、deny 决策点。
 - `AgentRuntime` 只负责编排消息、模型和工具。
 - `AgentEvent` 让普通 CLI、TUI 和 JSON 输出复用同一运行时。
+- `SessionStore` 只管理当前项目、版本化 schema 校验和原子文件写入。
+- `ContextCompactor` 按完整用户轮次切分，并通过 `ModelAdapter` 摘要旧历史。
 
 流式输出的事件约束和验收标准见 [docs/streaming-output.md](docs/streaming-output.md)。
 
 ## 规划
-
-v0.4：
-
-- 会话持久化与恢复。
-- 上下文压缩。
-- JSON 输出模式。
 
 v0.5：
 
@@ -202,4 +231,4 @@ v0.5：
 
 `pi-ai` 只负责模型通信，不负责 PawCode 的工具权限。PawCode 默认拒绝非交互写入和命令操作；交互授权只在当前进程内有效。文件工具会检查工作区边界和符号链接，命令工具不经过 Shell，但这些措施不等同于操作系统沙箱。仍应避免在包含不必要敏感数据的目录中启动，因为模型读取到的工具结果会发送到配置的模型服务。
 
-v0.3 的完整设计和验收标准见 [docs/v0.3-design.md](docs/v0.3-design.md)。
+详细设计见 [v0.3](docs/v0.3-design.md) 和 [v0.4](docs/v0.4-design.md) 技术文档。

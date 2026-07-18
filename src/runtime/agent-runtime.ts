@@ -1,11 +1,12 @@
 import type { Message } from '../domain/message.js'
-import type { ModelResponse, ModelUsage } from '../domain/model.js'
+import { addModelUsage, type ModelResponse, type ModelUsage } from '../domain/model.js'
 import type { ModelAdapter } from '../models/model-adapter.js'
 import type { ToolContext } from '../tools/tool.js'
 import { ToolRegistry } from '../tools/tool-registry.js'
 import type { AgentEvent } from './agent-event.js'
+import type { ContextCompactor } from './context-compactor.js'
 
-const systemPrompt = `你是 PawCode，一个运行在终端中的 AI 编程 Agent。
+export const systemPrompt = `你是 PawCode，一个运行在终端中的 AI 编程 Agent。
 需要了解项目时，必须使用工具读取真实文件，不要猜测。
 修改前先读取相关文件，小范围修改优先使用 apply_patch，创建或完整重写文件使用 write_file。
 所有写入和命令都受权限系统控制；权限被拒绝时不要尝试绕过。
@@ -18,19 +19,30 @@ export interface AgentRuntimeOptions {
   tools: ToolRegistry
   toolContext: ToolContext
   maxTurns: number
+  initialMessages?: Message[]
+  compactor?: ContextCompactor
+  onMessagesChanged?: (messages: Message[]) => Promise<void>
+  onContextCompacted?: () => Promise<void>
 }
 
 export class AgentRuntime {
-  private messages: Message[] = this.initialMessages()
+  private messages: Message[]
 
-  constructor(private readonly options: AgentRuntimeOptions) {}
+  constructor(private readonly options: AgentRuntimeOptions) {
+    this.messages = structuredClone(options.initialMessages ?? this.initialMessages())
+  }
 
-  clear(): void {
+  async clear(): Promise<void> {
     this.messages = this.initialMessages()
+    await this.notifyMessagesChanged()
   }
 
   messageCount(): number {
     return this.messages.length
+  }
+
+  messagesSnapshot(): Message[] {
+    return structuredClone(this.messages)
   }
 
   // 事件流把 Agent 的执行过程与终端展示分离，未来可以复用到 TUI 或 JSON 输出。
@@ -41,12 +53,32 @@ export class AgentRuntime {
       return
     }
 
-    this.messages.push({ role: 'user', content: input })
     // 一次用户请求可能包含多个模型—工具轮次，CLI 应展示整个 run 的合计值。
     let totalUsage: ModelUsage | undefined
     let stopReason: string | undefined
 
     try {
+      this.messages.push({ role: 'user', content: input })
+      await this.notifyMessagesChanged()
+
+      if (this.options.compactor) {
+        const compaction = await this.options.compactor.compactIfNeeded(this.messages, signal)
+        if (compaction.error) {
+          yield { type: 'context_compaction_failed', error: compaction.error }
+        } else if (compaction.changed) {
+          this.messages = compaction.messages
+          totalUsage = addModelUsage(totalUsage, compaction.usage)
+          await this.notifyMessagesChanged()
+          await this.options.onContextCompacted?.()
+          yield {
+            type: 'context_compacted',
+            removedMessages: compaction.removedMessages,
+            estimatedTokensBefore: compaction.estimatedTokensBefore,
+            estimatedTokensAfter: compaction.estimatedTokensAfter,
+          }
+        }
+      }
+
       for (let turn = 1; turn <= this.options.maxTurns; turn += 1) {
         yield { type: 'turn_started', turn }
 
@@ -78,7 +110,7 @@ export class AgentRuntime {
           throw new Error('模型流结束时缺少 completed 事件')
         }
 
-        totalUsage = addUsage(totalUsage, response.usage)
+        totalUsage = addModelUsage(totalUsage, response.usage)
         stopReason = response.stopReason ?? stopReason
 
         this.messages.push({
@@ -87,6 +119,7 @@ export class AgentRuntime {
           ...(response.toolCalls.length > 0 ? { tool_calls: response.toolCalls } : {}),
           ...(response.providerData !== undefined ? { providerData: response.providerData } : {}),
         })
+        await this.notifyMessagesChanged()
 
         if (response.toolCalls.length === 0) {
           yield {
@@ -115,6 +148,7 @@ export class AgentRuntime {
             tool_call_id: call.id,
             content: result,
           })
+          await this.notifyMessagesChanged()
           yield { type: 'tool_finished', name: call.function.name, result }
         }
       }
@@ -132,33 +166,16 @@ export class AgentRuntime {
   }
 
   private initialMessages(): Message[] {
-    return [{ role: 'system', content: systemPrompt }]
+    return createInitialMessages()
+  }
+
+  private async notifyMessagesChanged(): Promise<void> {
+    if (this.options.onMessagesChanged) {
+      await this.options.onMessagesChanged(this.messagesSnapshot())
+    }
   }
 }
 
-function addUsage(current: ModelUsage | undefined, next: ModelUsage | undefined): ModelUsage | undefined {
-  if (!next) return current
-  if (!current) return next
-
-  const currentCost = current.cost
-  const nextCost = next.cost
-  // 部分本地或自定义 Provider 没有成本数据；只有任一轮提供成本时才创建 cost。
-  return {
-    inputTokens: current.inputTokens + next.inputTokens,
-    outputTokens: current.outputTokens + next.outputTokens,
-    cacheReadTokens: current.cacheReadTokens + next.cacheReadTokens,
-    cacheWriteTokens: current.cacheWriteTokens + next.cacheWriteTokens,
-    totalTokens: current.totalTokens + next.totalTokens,
-    ...(currentCost || nextCost
-      ? {
-          cost: {
-            input: (currentCost?.input ?? 0) + (nextCost?.input ?? 0),
-            output: (currentCost?.output ?? 0) + (nextCost?.output ?? 0),
-            cacheRead: (currentCost?.cacheRead ?? 0) + (nextCost?.cacheRead ?? 0),
-            cacheWrite: (currentCost?.cacheWrite ?? 0) + (nextCost?.cacheWrite ?? 0),
-            total: (currentCost?.total ?? 0) + (nextCost?.total ?? 0),
-          },
-        }
-      : {}),
-  }
+export function createInitialMessages(): Message[] {
+  return [{ role: 'system', content: systemPrompt }]
 }

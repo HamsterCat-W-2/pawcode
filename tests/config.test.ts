@@ -15,6 +15,8 @@ describe('loadConfig', () => {
       apiKey: 'test-key',
       maxAgentTurns: 10,
       maxToolOutputChars: 20_000,
+      contextCompactThreshold: 0.8,
+      contextKeepRecentTokens: 20_000,
     })
   })
 
@@ -29,5 +31,13 @@ describe('loadConfig', () => {
       baseUrl: 'http://localhost:11434/v1',
       model: 'qwen3-coder',
     })
+  })
+
+  it('恢复会话时可使用会话中的模型默认值', () => {
+    expect(loadConfig({}, { provider: 'anthropic', model: 'saved-model' })).toMatchObject({
+      provider: 'anthropic',
+      model: 'saved-model',
+    })
+    expect(() => loadConfig({})).toThrow('MODEL_NAME')
   })
 })

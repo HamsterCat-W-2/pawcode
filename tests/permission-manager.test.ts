@@ -23,6 +23,10 @@ describe('PermissionManager', () => {
     await expect(manager.authorize(writeRequest)).resolves.toEqual({ allowed: true })
     await expect(manager.authorize(writeRequest)).resolves.toEqual({ allowed: true })
     expect(confirm).toHaveBeenCalledTimes(1)
+
+    manager.clearSessionRules()
+    await expect(manager.authorize(writeRequest)).resolves.toEqual({ allowed: true })
+    expect(confirm).toHaveBeenCalledTimes(2)
   })
 
   it('危险操作即使命中规则也硬拒绝', async () => {
