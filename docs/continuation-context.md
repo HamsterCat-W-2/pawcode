@@ -8,12 +8,17 @@
 - 版本：v0.4。
 - 路径：`/Users/guoxuanloveweiyan/Documents/guoxuan/programe/pawcode`。
 - 分支：`codex/session-persistence-resume`。
-- 当前分支 HEAD 包含 v0.4 会话持久化、恢复、上下文压缩和 NDJSON 输出；具体提交号及工作区状态继续以 `git log -1` 和 `git status` 为准。
+- 当前分支跟踪 `origin/codex/session-persistence-resume`；ahead/behind 和工作区状态继续以实际 `git status` 为准。
+- 当前 HEAD 包含 v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner。
 - `.env` 已忽略，绝不能提交密钥。
 
 关键历史：
 
 ```text
+HEAD    feat: improve session resume interaction
+83ee87b feat: add interactive terminal banner
+733c05e feat: add verbose tool output
+58ac023 feat: add session persistence and resume
 9e5d599 docs: refresh continuation context
 2053e6c feat: add safe write and command workflows
 995ab48 chore: chore
@@ -41,6 +46,7 @@ c66abe8 refactor: split domain types by concept
 - Session schema v1、Zod 磁盘校验、`0600` 权限和临时文件原子替换。
 - Claude Code 风格会话入口：`--continue/-c`、`--resume/-r [id|name]`、`--fork-session`、`--name/-n` 和 `--list-sessions`。
 - 交互会话命令：`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。
+- 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，输入态 `Esc` 清空输入。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
 - `--json` 严格 NDJSON；stdout 不混入人类装饰输出，非交互副作用默认拒绝。
 - 人类可读输出默认隐藏成功工具明细；`--verbose` 才显示参数和结果长度，工具失败始终显示。
@@ -100,7 +106,7 @@ ContextCompactor
 
 ```text
 src/
-├── cli.ts                         CLI、流式渲染、交互授权、usage 展示
+├── cli.ts                         CLI、流式渲染、交互授权、Banner 和 usage 展示
 ├── config/config.ts               环境变量读取与校验
 ├── domain/
 │   ├── message.ts                 PawCode 消息协议
@@ -111,13 +117,17 @@ src/
 │   ├── model-event.ts             供应商无关流事件
 │   └── pi-ai-model-adapter.ts     唯一 pi-ai 翻译层
 ├── output/
-│   └── json-renderer.ts            AgentEvent → NDJSON
+│   ├── banner-renderer.ts          响应式、可关闭颜色的交互启动页
+│   ├── json-renderer.ts            AgentEvent → NDJSON
+│   ├── session-display.ts          恢复历史回放与退出续聊提示
+│   └── tool-event-renderer.ts      默认安静、verbose 可见的工具事件格式
 ├── permissions/
 │   └── permission-manager.ts      allow / ask / deny 与会话规则
 ├── runtime/
 │   ├── agent-event.ts             CLI/TUI 可复用事件
 │   ├── agent-runtime.ts           多轮模型—工具编排与保存钩子
-│   └── context-compactor.ts       Token 预算、安全切分与摘要
+│   ├── context-compactor.ts       Token 预算、安全切分与摘要
+│   └── interactive-signal-state.ts 输入态退出与运行态取消的 SIGINT 区分
 ├── sessions/
 │   ├── session-schema.ts          版本化磁盘 schema
 │   ├── session-store.ts           项目隔离、校验与原子存储
@@ -313,13 +323,15 @@ pnpm build
 
 `tsx` 在受限沙箱中可能因无法创建 IPC 管道而报 `EPERM`，构建后的 `node dist/cli.js` 可正常运行。
 
-当前 v0.4 工作区验证：
+当前 v0.4 分支验证：
 
 - Prettier、TypeScript 和构建通过。
-- 12 个测试文件、38 个测试通过。
+- 14 个测试文件、45 个测试通过。
 - `node dist/cli.js --version` 输出 `0.4.0`。
 - 构建后 `--list-sessions --json` 输出可解析的空 sessions 事件。
 - JSON 启动错误和缺少 prompt 错误均只输出合法 JSON 行。
+- 默认隐藏成功工具明细，`--verbose` 恢复展示，失败结果始终可见。
+- 宽屏、窄屏、无颜色和非 TTY Banner 专项测试通过，并已检查纯文本边框对齐。
 - `git diff --check` 通过。
 
 ## 下一步
@@ -328,7 +340,7 @@ pnpm build
 2. 验证 `--fork-session` 与 `/branch` 产生新 ID、保留原历史且不继承会话权限规则。
 3. 将压缩阈值临时调低，人工确认 `context_compacted`、摘要质量、usage 累加和恢复后的压缩历史。
 4. 验证 `--json` 长回答、工具调用、权限拒绝与显式 allow 的每行 JSON。
-5. 人工验收通过后提交 v0.4，并按需要合并/推送。
+5. 人工验收通过后，将 `codex/session-persistence-resume` 合并到目标分支并准备 v0.4 发布说明。
 6. v0.5：MCP Client、Hooks、自定义命令和子 Agent。
 
 ## 新对话起始提示
@@ -337,5 +349,6 @@ pnpm build
 请先阅读 docs/continuation-context.md，并按需阅读 docs/v0.4-design.md、
 docs/v0.3-design.md 和 docs/streaming-output.md，然后检查 git status --short --branch。保持 PawCode
 Domain 与 PiAiModelAdapter 的边界；所有副作用必须经过 ToolRegistry 和
-PermissionManager。修改后运行格式、类型、测试和构建验证。
+PermissionManager。新增或修改代码必须添加便于 review 的中文注释；修改后运行格式、
+类型、测试和构建验证。
 ```

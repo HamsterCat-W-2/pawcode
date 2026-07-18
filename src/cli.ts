@@ -2,19 +2,23 @@
 
 import { execFile } from 'node:child_process'
 import { stdin, stdout } from 'node:process'
+import { emitKeypressEvents } from 'node:readline'
 import { createInterface } from 'node:readline/promises'
 import { promisify } from 'node:util'
 import { Command } from 'commander'
 import { loadConfig, type PawCodeConfig } from './config/config.js'
+import type { Message } from './domain/message.js'
 import type { ModelUsage } from './domain/model.js'
 import { PiAiModelAdapter } from './models/pi-ai-model-adapter.js'
 import { renderBanner } from './output/banner-renderer.js'
 import { encodeJsonLine, toJsonEvent } from './output/json-renderer.js'
+import { renderResumeHint, renderSessionHistory } from './output/session-display.js'
 import { formatToolFinished, formatToolStarted, type HumanToolLine } from './output/tool-event-renderer.js'
 import { PermissionManager } from './permissions/permission-manager.js'
 import type { AgentEvent } from './runtime/agent-event.js'
 import { AgentRuntime, createInitialMessages } from './runtime/agent-runtime.js'
 import { ContextCompactor } from './runtime/context-compactor.js'
+import { InteractiveSignalState, isReadlineKeyboardInterrupt } from './runtime/interactive-signal-state.js'
 import { SessionManager } from './sessions/session-manager.js'
 import type { SessionSummary } from './sessions/session-schema.js'
 import { SessionStore } from './sessions/session-store.js'
@@ -154,7 +158,7 @@ async function main(): Promise<void> {
   })
   session ??= await createSession(store, provider, model, options.name)
   const bundle = createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager)
-  await runInteractive(bundle, store, config, maxTurns, permissionManager, readline)
+  await runInteractive(bundle, store, config, maxTurns, permissionManager, readline, resumed !== undefined)
 }
 
 async function resolveSession(store: SessionStore): Promise<SessionManager | undefined> {
@@ -253,15 +257,51 @@ async function runInteractive(
   maxTurns: number,
   permissionManager: PermissionManager,
   readline: ReturnType<typeof createInterface>,
+  showRestoredHistory: boolean,
 ): Promise<void> {
   let bundle = initialBundle
+  const signalState = new InteractiveSignalState()
+  const handleKeyboardExit = () => {
+    if (!signalState.requestKeyboardExit()) return
+    stdout.write(renderResumeHint(bundle.session.snapshot()))
+    readline.close()
+  }
+  const handleKeypress = (_value: string, key: { name?: string }) => {
+    // Node 会把单独 Esc 标记为 name=escape 且 meta=true；按 name 判断才能兼容真实终端。
+    if (key.name !== 'escape') return
+    if (signalState.interruptRun()) return
+    clearCurrentInput(readline)
+  }
+  // process 级监听可以与 renderRun 的一次性 SIGINT 监听并存：状态对象决定本次信号是退出还是取消运行。
+  process.on('SIGINT', handleKeyboardExit)
+  if (stdin.isTTY) {
+    // readline 已负责 raw mode；显式启用 keypress 解析后才能区分单独的 Esc 与 Alt/方向键序列。
+    emitKeypressEvents(stdin, readline)
+    stdin.on('keypress', handleKeypress)
+  }
   printInteractiveHeader(bundle)
+  if (showRestoredHistory) printSessionHistory(bundle.session.snapshot().messages)
 
   try {
     while (true) {
-      const input = (await readline.question('你 > ')).trim()
+      let input: string
+      try {
+        input = (await readline.question('你 > ')).trim()
+      } catch (error) {
+        // readline/promises 可能直接以 “Aborted with Ctrl+C” reject，此时 process SIGINT 监听器不会先执行。
+        if (isReadlineKeyboardInterrupt(error)) {
+          if (signalState.requestKeyboardExit()) stdout.write(renderResumeHint(bundle.session.snapshot()))
+          return
+        }
+        // process SIGINT 已关闭 readline 时，未完成的 question 也会 reject；退出提示不能重复输出。
+        if (signalState.shouldExit()) return
+        throw error
+      }
       if (!input) continue
-      if (input === '/exit') return
+      if (input === '/exit') {
+        stdout.write(renderResumeHint(bundle.session.snapshot()))
+        return
+      }
 
       if (input === '/clear') {
         await bundle.runtime.clear()
@@ -298,6 +338,7 @@ async function runInteractive(
           const record = session.snapshot()
           bundle = createRuntimeBundle(session, record.provider, record.model, maxTurns, config, permissionManager)
           console.log(`已恢复会话 ${record.id}：${record.title}\n`)
+          printSessionHistory(record.messages)
         } catch (error) {
           console.error(`恢复失败：${error instanceof Error ? error.message : String(error)}\n`)
         }
@@ -328,20 +369,38 @@ async function runInteractive(
         continue
       }
 
-      await renderRun(bundle, input, renderHumanEvent)
+      const controller = signalState.beginRun()
+      try {
+        await renderRun(bundle, input, renderHumanEvent, controller)
+      } finally {
+        signalState.endRun()
+      }
     }
   } finally {
+    process.removeListener('SIGINT', handleKeyboardExit)
+    stdin.removeListener('keypress', handleKeypress)
     readline.close()
   }
+}
+
+function clearCurrentInput(readline: ReturnType<typeof createInterface>): void {
+  // 模拟 Home + Kill Line，确保光标位于输入中间时也能清除整行，而不是只删除光标左侧。
+  readline.write(null, { ctrl: true, name: 'a' })
+  readline.write(null, { ctrl: true, name: 'k' })
+}
+
+function printSessionHistory(messages: Message[]): void {
+  const history = renderSessionHistory(messages)
+  if (history) stdout.write(history)
 }
 
 async function renderRun(
   bundle: RuntimeBundle,
   prompt: string,
   renderer: (event: AgentEvent, state: RenderState) => void,
+  controller = new AbortController(),
 ): Promise<void> {
   const state: RenderState = { streamingText: false, thinkingShown: false }
-  const controller = new AbortController()
   const cancel = () => controller.abort()
   process.once('SIGINT', cancel)
   let terminalEventSeen = false

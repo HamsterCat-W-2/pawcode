@@ -143,6 +143,8 @@ pnpm dev --list-sessions
 
 `--continue/-c` 恢复最近会话；`--resume/-r` 无参数打开编号选择器，有参数时按 ID 或 `/rename` 设置的名称恢复；`--fork-session` 复制历史并生成新会话 ID。交互模式还提供 `/new`、`/sessions`、`/resume [id|name]`、`/rename [name]` 和 `/branch [name]`。不同工作区的会话不能互相恢复；切换 Git 分支时会显示警告。
 
+交互恢复会话时会回放用户、助手和压缩摘要，不展示内部 system prompt、工具结果或供应商私有数据。在输入提示处执行 `/exit` 或按 `Ctrl+C` 后，都会显示可复制的 `pawcode --resume <name-or-id>` 和 `pawcode --continue` 命令；模型生成期间按 `Esc` 或 `Ctrl+C` 只取消当前请求，输入态按 `Esc` 清空当前输入。PawCode 暂不实现 Claude Code 的双击 `Esc` rewind。
+
 机器调用使用 NDJSON：
 
 ```bash
