@@ -4,3 +4,4 @@ dist/
 .pawcode/
 coverage/
 *.log
+.pnpm-store
