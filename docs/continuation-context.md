@@ -10,12 +10,14 @@
 - 分支：`codex/session-persistence-resume`。
 - 当前分支跟踪 `origin/codex/session-persistence-resume`；ahead/behind 和工作区状态继续以实际 `git status` 为准。
 - 当前分支包含 v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner，以及 v0.4.1 错误恢复加固。
+- v0.4.1 错误恢复已由提交 `19b0e6d` 完成；该提交之后的文档更新是否已提交，仍以实际 `git status` 为准。
 - `.env` 已忽略，绝不能提交密钥。
 
 关键历史：
 
 ```text
-HEAD    feat: improve session resume interaction
+19b0e6d feat: harden error recovery
+102bf56 feat: improve session resume interaction
 83ee87b feat: add interactive terminal banner
 733c05e feat: add verbose tool output
 58ac023 feat: add session persistence and resume
@@ -334,7 +336,7 @@ pnpm test
 pnpm build
 ```
 
-本轮环境中的全局 `pnpm` 曾在启动阶段无输出卡住；当时直接调用以下项目二进制完成了等价验证：
+受限沙箱中的全局 `pnpm` 可能在启动阶段无输出卡住；可在获得执行权限后运行标准验证，或直接调用以下项目二进制完成等价验证：
 
 ```bash
 ./node_modules/.bin/prettier --check .
@@ -347,6 +349,7 @@ pnpm build
 
 当前 v0.4.1 验证基线：
 
+- 对应功能提交：`19b0e6d feat: harden error recovery`。
 - Prettier、TypeScript 和构建通过。
 - 17 个测试文件、56 个测试通过。
 - `node dist/cli.js --version` 输出 `0.4.1`。
@@ -362,7 +365,7 @@ pnpm build
 2. 运行中按 Esc，确认部分回答保存、状态为 `cancelled`，恢复后可见。
 3. 模拟遗留 `running` 会话，确认下次启动改为 `interrupted` 且不改变最近会话排序。
 4. 人工验证权限确认期间 Esc、命令取消/超时警告和 `pawcode --help | head` 断管行为。
-5. 人工验收通过后，将 v0.4.1 合并到目标分支并准备发布说明。
+5. 人工验收通过后，推送 `codex/session-persistence-resume`，将 v0.4.1 合并到目标分支并准备发布说明。
 6. v0.5：MCP Client、Hooks、自定义命令和子 Agent。
 
 ## 新对话起始提示
