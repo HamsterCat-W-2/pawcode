@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -31,5 +31,19 @@ describe('WorkspaceFiles', () => {
 
     await expect(files.read('../secret.txt')).rejects.toThrow('路径越过工作区边界')
     await expect(files.list('outside')).rejects.toThrow('符号链接越过工作区边界')
+    await expect(files.write('outside/new.txt', 'blocked')).rejects.toThrow('符号链接越过工作区边界')
+    await expect(files.write('.git/config', 'blocked')).rejects.toThrow('禁止通过文件工具修改 .git')
+  })
+
+  it('创建文件并执行精确文本替换', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'pawcode-write-'))
+    const files = await WorkspaceFiles.create(root)
+
+    await expect(files.write('src/new.ts', 'const value = 1\n')).resolves.toContain('src/new.ts')
+    await expect(files.replace('src/new.ts', 'value = 1', 'value = 2')).resolves.toContain('替换 1 处')
+    await expect(readFile(path.join(root, 'src/new.ts'), 'utf8')).resolves.toBe('const value = 2\n')
+
+    await writeFile(path.join(root, 'duplicate.txt'), 'same same', 'utf8')
+    await expect(files.replace('duplicate.txt', 'same', 'new')).rejects.toThrow('出现 2 次')
   })
 })

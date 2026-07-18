@@ -15,7 +15,7 @@ import {
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { builtinModels } from '@earendil-works/pi-ai/providers/all'
 import type { Message } from '../domain/message.js'
-import type { ModelRequest, ModelResponse } from '../domain/model.js'
+import type { ModelRequest, ModelResponse, ModelUsage } from '../domain/model.js'
 import type { ToolCall, ToolDefinition } from '../domain/tool.js'
 import type { ModelAdapter } from './model-adapter.js'
 import type { ModelEvent } from './model-event.js'
@@ -269,8 +269,28 @@ function fromPiResponse(response: AssistantMessage): ModelResponse {
   return {
     content: text || null,
     toolCalls,
+    usage: fromPiUsage(response.usage),
+    stopReason: response.stopReason,
     // 简化后的响应会丢弃部分信息，因此同时保存原始消息供下一轮完整重放。
     providerData: response,
+  }
+}
+
+function fromPiUsage(usage: Usage): ModelUsage {
+  // 显式逐字段转换，防止 pi-ai 的类型或命名扩散到 CLI、Runtime 和会话层。
+  return {
+    inputTokens: usage.input,
+    outputTokens: usage.output,
+    cacheReadTokens: usage.cacheRead,
+    cacheWriteTokens: usage.cacheWrite,
+    totalTokens: usage.totalTokens,
+    cost: {
+      input: usage.cost.input,
+      output: usage.cost.output,
+      cacheRead: usage.cost.cacheRead,
+      cacheWrite: usage.cost.cacheWrite,
+      total: usage.cost.total,
+    },
   }
 }
 

@@ -60,7 +60,16 @@ describe('PiAiModelAdapter', () => {
 
     expect(events.some((event) => event.type === 'text_delta')).toBe(true)
     expect(events.some((event) => event.type === 'thinking_delta')).toBe(true)
-    expect(events.at(-1)).toEqual({ type: 'completed', text: '完成' })
+    expect(events.at(-1)).toMatchObject({
+      type: 'completed',
+      text: '完成',
+      stopReason: 'stop',
+      usage: {
+        inputTokens: expect.any(Number),
+        outputTokens: expect.any(Number),
+        totalTokens: expect.any(Number),
+      },
+    })
     expect(continuationContext?.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'toolResult'])
     expect(continuationContext?.messages.at(-1)).toMatchObject({
       role: 'toolResult',

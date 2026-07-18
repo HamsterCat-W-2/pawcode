@@ -4,18 +4,18 @@
 
 ## 项目定位
 
-PawCode 是一个用 Node.js、TypeScript 和 pnpm 编写的终端 AI 编程 Agent。当前是 v0.2，只提供**只读**文件能力，重点用于学习：
+PawCode 是一个用 Node.js、TypeScript 和 pnpm 编写的终端 AI 编程 Agent。当前 v0.3 已实现：在原有只读分析能力上加入统一权限控制、文件编辑、命令执行和 Git 验证工作流。
 
 - AI 编程 Agent 的执行循环。
 - CLI 与流式输出。
 - Tool Calling。
 - 多模型供应商兼容。
-- 后续的 MCP、权限、会话和多 Agent。
+- 权限控制，以及后续的 MCP、会话和多 Agent。
 
 项目路径：
 
 ```text
-/Users/shmiwangguoxuan/Documents/claude code cli study/pawcode
+/Users/guoxuanloveweiyan/Documents/guoxuan/programe/pawcode
 ```
 
 ## Git 状态
@@ -26,15 +26,17 @@ PawCode 是一个用 Node.js、TypeScript 和 pnpm 编写的终端 AI 编程 Age
 add_pi_ai_adapter
 ```
 
-截至本文档创建时的最新提交：
+截至 v0.3 开发开始前的最新提交：
 
 ```text
-815f563 feat: stream model output in the CLI
+995ab48 chore: chore
 ```
 
 关键提交历史：
 
 ```text
+995ab48 chore: chore
+25c8787 docs: add docs
 815f563 feat: stream model output in the CLI
 d57bf16 docs: explain pi-ai protocol conversions
 c66abe8 refactor: split domain types by concept
@@ -49,7 +51,7 @@ c66abe8 refactor: split domain types by concept
 环境要求：Node.js `>=22.19.0`、pnpm 11。
 
 ```bash
-cd "/Users/shmiwangguoxuan/Documents/claude code cli study/pawcode"
+cd "/Users/guoxuanloveweiyan/Documents/guoxuan/programe/pawcode"
 pnpm install
 pnpm format:check
 pnpm check
@@ -105,6 +107,14 @@ ModelAdapter
 PiAiModelAdapter
  ↓ pi-ai Context / Message / Tool
 小米 MiMo / OpenAI / Anthropic / 其他 Provider
+
+AgentRuntime
+ ↓ ToolCall
+ToolRegistry
+ ↓ PermissionRequest
+PermissionManager
+ ↓ allow
+文件、命令与 Git 工具
 ```
 
 目录职责：
@@ -121,6 +131,8 @@ src/
 │   ├── model-adapter.ts           Runtime 依赖的稳定接口
 │   ├── model-event.ts             供应商无关的流事件
 │   └── pi-ai-model-adapter.ts     pi-ai 适配、认证、超时、协议转换
+├── permissions/
+│   └── permission-manager.ts      allow、ask、deny 与会话规则
 ├── runtime/
 │   ├── agent-event.ts             CLI/TUI 可复用的运行时事件
 │   └── agent-runtime.ts           多轮模型—工具编排
@@ -130,7 +142,12 @@ src/
     ├── workspace-files.ts         工作区路径安全与文件访问
     ├── list-files-tool.ts
     ├── read-file-tool.ts
-    └── grep-tool.ts
+    ├── grep-tool.ts
+    ├── write-file-tool.ts
+    ├── apply-patch-tool.ts
+    ├── process-runner.ts
+    ├── run-command-tool.ts
+    └── git-diff-tool.ts
 ```
 
 ## 重要架构决策
@@ -203,33 +220,31 @@ type ModelEvent =
 - 工作区边界检查、符号链接检查、工具输出截断。
 - 工具调用循环。
 - Prettier、TypeScript、Vitest。
+- Token 用量、成本和 stop reason 的 Domain 转换与 CLI 汇总展示。
+- `allow`、`ask`、`deny` 权限管理；非交互副作用默认拒绝。
+- `write_file`、`apply_patch`、`run_command` 和 `git_diff`。
+- 命令参数不经过 Shell，支持工作区 cwd、超时、取消和输出截断。
 
-截至流式功能提交，测试为 5 个测试文件、12 个测试；后续以实际 `pnpm test` 输出为准。
+截至本次实现，共有 7 个测试文件、22 个测试；格式、类型、测试和构建均通过。继续任务前仍须重新运行完整验证。
 
 ## 未完成事项与建议顺序
 
-建议后续按下面顺序推进：
+1. 使用真实小米 Token Plan 手工验证流式输出、用量和 stop reason。
+2. 对 v0.3 权限提示、文件修改和命令取消做一次真实 CLI 手工验收。
+3. v0.4：会话持久化与恢复、上下文压缩、JSON 输出。
+4. v0.5：MCP Client、Hooks、自定义命令和子 Agent。
 
-1. 为流式输出做一次真实小米 Token Plan 手工验证，确认文本在完整回答前出现。
-2. 增加 Token 用量、成本和最终 stop reason 的 CLI 展示。
-3. 新增 `write_file` 与补丁编辑工具。
-4. 新增 Shell 命令执行工具。
-5. 在执行写文件与命令前实现权限确认、允许规则和工作区安全策略。
-6. 加入 Git diff、测试运行工作流。
-7. 实现会话持久化、上下文压缩、JSON 输出。
-8. 接入 MCP Client。
-9. 最后再设计子 Agent 与多 Agent 编排。
-
-注意：第 3、4 步会引入写入和命令执行能力，必须与第 5 步的权限机制一起设计；不要把它们作为无确认工具直接暴露给模型。
+v0.3 的设计、安全边界和验收标准见 [v0.3-design.md](./v0.3-design.md)。副作用工具必须经过 `ToolRegistry` 和 `PermissionManager`，不能直接暴露给模型。
 
 ## 给新窗口的起始提示
 
 可直接复制下面这段给新的 Agent：
 
 ```text
-请阅读 docs/continuation-context.md 和 docs/streaming-output.md，
+请阅读 docs/continuation-context.md、docs/streaming-output.md 和 docs/v0.3-design.md，
 然后检查 git status --short --branch。项目是 PawCode，当前在
 add_pi_ai_adapter 分支。保持 PawCode Domain 与 PiAiModelAdapter 的
-协议边界，不要让 AgentRuntime 直接依赖 pi-ai。请基于文档继续实现
-下一个功能，并在修改后运行 pnpm format:check、pnpm check、pnpm test、pnpm build。
+协议边界，不要让 AgentRuntime 直接依赖 pi-ai。所有写入和命令必须经过
+PermissionManager。请基于文档继续实现下一个功能，并在修改后运行
+pnpm format:check、pnpm check、pnpm test、pnpm build。
 ```

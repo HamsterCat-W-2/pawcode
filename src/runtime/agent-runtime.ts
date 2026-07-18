@@ -1,14 +1,17 @@
 import type { Message } from '../domain/message.js'
-import type { ModelResponse } from '../domain/model.js'
+import type { ModelResponse, ModelUsage } from '../domain/model.js'
 import type { ModelAdapter } from '../models/model-adapter.js'
 import type { ToolContext } from '../tools/tool.js'
 import { ToolRegistry } from '../tools/tool-registry.js'
 import type { AgentEvent } from './agent-event.js'
 
-const systemPrompt = `你是 PawCode，一个运行在终端中的只读编程 Agent。
+const systemPrompt = `你是 PawCode，一个运行在终端中的 AI 编程 Agent。
 需要了解项目时，必须使用工具读取真实文件，不要猜测。
-你只能查看文件，不能修改文件或执行命令。
-完成调查后用简洁中文回答，并指出作为依据的文件。`
+修改前先读取相关文件，小范围修改优先使用 apply_patch，创建或完整重写文件使用 write_file。
+所有写入和命令都受权限系统控制；权限被拒绝时不要尝试绕过。
+修改后使用 git_diff 检查差异，并根据项目配置运行格式、类型、测试和构建验证。
+未经用户明确要求，不要提交、推送或执行破坏性 Git 操作。
+完成后用简洁中文说明改动、验证结果和仍存在的风险。`
 
 export interface AgentRuntimeOptions {
   model: ModelAdapter
@@ -39,6 +42,9 @@ export class AgentRuntime {
     }
 
     this.messages.push({ role: 'user', content: input })
+    // 一次用户请求可能包含多个模型—工具轮次，CLI 应展示整个 run 的合计值。
+    let totalUsage: ModelUsage | undefined
+    let stopReason: string | undefined
 
     try {
       for (let turn = 1; turn <= this.options.maxTurns; turn += 1) {
@@ -72,6 +78,9 @@ export class AgentRuntime {
           throw new Error('模型流结束时缺少 completed 事件')
         }
 
+        totalUsage = addUsage(totalUsage, response.usage)
+        stopReason = response.stopReason ?? stopReason
+
         this.messages.push({
           role: 'assistant',
           content: response.content,
@@ -80,7 +89,12 @@ export class AgentRuntime {
         })
 
         if (response.toolCalls.length === 0) {
-          yield { type: 'completed', text: response.content ?? '模型没有返回文本' }
+          yield {
+            type: 'completed',
+            text: response.content ?? '模型没有返回文本',
+            ...(totalUsage ? { usage: totalUsage } : {}),
+            ...(stopReason ? { stopReason } : {}),
+          }
           return
         }
 
@@ -91,11 +105,10 @@ export class AgentRuntime {
             argumentsJson: call.function.arguments,
           }
 
-          const result = await this.options.tools.execute(
-            call.function.name,
-            call.function.arguments,
-            this.options.toolContext,
-          )
+          const result = await this.options.tools.execute(call.function.name, call.function.arguments, {
+            ...this.options.toolContext,
+            ...(signal ? { signal } : {}),
+          })
 
           this.messages.push({
             role: 'tool',
@@ -120,5 +133,32 @@ export class AgentRuntime {
 
   private initialMessages(): Message[] {
     return [{ role: 'system', content: systemPrompt }]
+  }
+}
+
+function addUsage(current: ModelUsage | undefined, next: ModelUsage | undefined): ModelUsage | undefined {
+  if (!next) return current
+  if (!current) return next
+
+  const currentCost = current.cost
+  const nextCost = next.cost
+  // 部分本地或自定义 Provider 没有成本数据；只有任一轮提供成本时才创建 cost。
+  return {
+    inputTokens: current.inputTokens + next.inputTokens,
+    outputTokens: current.outputTokens + next.outputTokens,
+    cacheReadTokens: current.cacheReadTokens + next.cacheReadTokens,
+    cacheWriteTokens: current.cacheWriteTokens + next.cacheWriteTokens,
+    totalTokens: current.totalTokens + next.totalTokens,
+    ...(currentCost || nextCost
+      ? {
+          cost: {
+            input: (currentCost?.input ?? 0) + (nextCost?.input ?? 0),
+            output: (currentCost?.output ?? 0) + (nextCost?.output ?? 0),
+            cacheRead: (currentCost?.cacheRead ?? 0) + (nextCost?.cacheRead ?? 0),
+            cacheWrite: (currentCost?.cacheWrite ?? 0) + (nextCost?.cacheWrite ?? 0),
+            total: (currentCost?.total ?? 0) + (nextCost?.total ?? 0),
+          },
+        }
+      : {}),
   }
 }

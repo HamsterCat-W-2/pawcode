@@ -1,6 +1,6 @@
 # PawCode
 
-PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 Agent。当前 v0.2 是只读版本，通过 `pi-ai` 兼容多个模型供应商，同时保留自己的 Agent Runtime、工具系统和安全边界。
+PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 Agent。当前 v0.3 可以在统一权限控制下读取和修改项目、运行命令并检查 Git 差异，通过 `pi-ai` 兼容多个模型供应商，同时保留自己的 Agent Runtime、工具系统和安全边界。
 
 ## 当前能力
 
@@ -13,7 +13,12 @@ PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 
 - `list_files`：递归查看项目文件。
 - `read_file`：按行读取文本文件。
 - `grep`：搜索代码并返回文件和行号。
+- `write_file`：创建或完整覆盖工作区文件。
+- `apply_patch`：通过精确文本替换修改文件。
+- `run_command`：经授权后以无 Shell 方式执行程序和参数。
+- `git_diff`：查看工作区状态和未提交差异。
 - 工作区路径隔离和符号链接检查。
+- 写入和命令的 allow、ask、deny 权限决策。
 - 最大 Agent 轮数和工具输出限制。
 - `/clear`、`/status`、`/exit` 命令。
 - 通过事件流分离 Agent Runtime 与终端展示。
@@ -99,6 +104,14 @@ pnpm dev "查看当前项目并解释目录结构"
 
 模型生成时会逐段显示文本；生成过程中按 `Ctrl+C` 可以取消当前请求。
 
+交互模式会在写文件或运行命令前询问。单次非交互模式默认拒绝副作用操作，可显式授权：
+
+```bash
+pnpm dev --allow-write --allow-command "pnpm test" "修复问题并运行测试"
+```
+
+`--allow-command` 可重复设置，按规范化后的命令前缀匹配。`rm`、`sudo`、Shell `-c` 和破坏性 Git 子命令始终拒绝。
+
 指定模型和最大轮数：
 
 ```bash
@@ -139,6 +152,8 @@ src/
 │   ├── model-adapter.ts
 │   ├── model-event.ts
 │   └── pi-ai-model-adapter.ts
+├── permissions/
+│   └── permission-manager.ts
 ├── runtime/
 │   ├── agent-event.ts
 │   └── agent-runtime.ts
@@ -148,7 +163,12 @@ src/
     ├── workspace-files.ts
     ├── list-files-tool.ts
     ├── read-file-tool.ts
-    └── grep-tool.ts
+    ├── grep-tool.ts
+    ├── write-file-tool.ts
+    ├── apply-patch-tool.ts
+    ├── process-runner.ts
+    ├── run-command-tool.ts
+    └── git-diff-tool.ts
 ```
 
 关键 seam：
@@ -158,20 +178,13 @@ src/
 - `PiAiModelAdapter` 将 PawCode 消息、工具和响应转换为 `pi-ai` 类型。
 - Runtime 会保存 Adapter 返回的供应商原始消息，确保多轮工具调用不丢失 thinking signature。
 - `Tool` 统一内置工具和未来 MCP 工具。
+- `PermissionManager` 是所有副作用工具的统一 allow、ask、deny 决策点。
 - `AgentRuntime` 只负责编排消息、模型和工具。
 - `AgentEvent` 让普通 CLI、TUI 和 JSON 输出复用同一运行时。
 
 流式输出的事件约束和验收标准见 [docs/streaming-output.md](docs/streaming-output.md)。
 
 ## 规划
-
-v0.3：
-
-- `write_file` 和补丁编辑工具。
-- 命令执行工具。
-- 权限确认和允许规则。
-- Git diff 与测试工作流。
-- Token 用量展示。
 
 v0.4：
 
@@ -187,4 +200,6 @@ v0.5：
 
 ## 安全说明
 
-v0.2 仅包含只读文件工具，不会修改文件或执行命令。`pi-ai` 只负责模型通信，不负责 PawCode 的工具权限。运行时仍应避免在包含不必要敏感数据的目录中启动，因为模型读取到的工具结果会发送到配置的模型服务。
+`pi-ai` 只负责模型通信，不负责 PawCode 的工具权限。PawCode 默认拒绝非交互写入和命令操作；交互授权只在当前进程内有效。文件工具会检查工作区边界和符号链接，命令工具不经过 Shell，但这些措施不等同于操作系统沙箱。仍应避免在包含不必要敏感数据的目录中启动，因为模型读取到的工具结果会发送到配置的模型服务。
+
+v0.3 的完整设计和验收标准见 [docs/v0.3-design.md](docs/v0.3-design.md)。

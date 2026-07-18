@@ -130,4 +130,57 @@ describe('AgentRuntime', () => {
       error: new Error('流连接失败'),
     })
   })
+
+  it('累加多轮模型用量并返回最终停止原因', async () => {
+    const model = new ScriptedModel([
+      {
+        content: null,
+        toolCalls: [{ id: 'usage-call', type: 'function', function: { name: 'echo', arguments: '{}' } }],
+        usage: {
+          inputTokens: 10,
+          outputTokens: 2,
+          cacheReadTokens: 1,
+          cacheWriteTokens: 0,
+          totalTokens: 13,
+          cost: { input: 0.01, output: 0.02, cacheRead: 0.001, cacheWrite: 0, total: 0.031 },
+        },
+        stopReason: 'toolUse',
+      },
+      {
+        content: '完成',
+        toolCalls: [],
+        usage: {
+          inputTokens: 20,
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 2,
+          totalTokens: 27,
+          cost: { input: 0.02, output: 0.05, cacheRead: 0, cacheWrite: 0.002, total: 0.072 },
+        },
+        stopReason: 'stop',
+      },
+    ])
+    const runtime = new AgentRuntime({
+      model,
+      tools: new ToolRegistry([echoTool]),
+      toolContext: { workspace: process.cwd(), maxOutputChars: 10_000 },
+      maxTurns: 2,
+    })
+
+    const events = []
+    for await (const event of runtime.run('统计')) events.push(event)
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'completed',
+      stopReason: 'stop',
+      usage: {
+        inputTokens: 30,
+        outputTokens: 7,
+        cacheReadTokens: 1,
+        cacheWriteTokens: 2,
+        totalTokens: 40,
+        cost: { total: 0.103 },
+      },
+    })
+  })
 })
