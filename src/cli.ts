@@ -8,6 +8,7 @@ import { Command } from 'commander'
 import { loadConfig, type PawCodeConfig } from './config/config.js'
 import type { ModelUsage } from './domain/model.js'
 import { PiAiModelAdapter } from './models/pi-ai-model-adapter.js'
+import { renderBanner } from './output/banner-renderer.js'
 import { encodeJsonLine, toJsonEvent } from './output/json-renderer.js'
 import { formatToolFinished, formatToolStarted, type HumanToolLine } from './output/tool-event-renderer.js'
 import { PermissionManager } from './permissions/permission-manager.js'
@@ -476,11 +477,21 @@ async function pickSession(
 
 function printInteractiveHeader(bundle: RuntimeBundle): void {
   const session = bundle.session.snapshot()
-  console.log('\n🐾 PawCode v0.4.0')
-  console.log(`模型：${bundle.provider}/${bundle.model}`)
-  console.log(`工作区：${process.cwd()}`)
-  console.log(`会话：${session.id}（${session.title}）`)
-  console.log('命令：/new /sessions /resume [id|name] /rename [name] /branch [name] /clear /status /exit\n')
+  const sessionLabel = session.name
+    ? `${session.name} (${session.id.slice(0, 8)})`
+    : `${session.id.slice(0, 8)} — ${session.title}`
+  const banner = renderBanner({
+    version: '0.4.0',
+    provider: bundle.provider,
+    model: bundle.model,
+    workspace: process.cwd(),
+    session: sessionLabel,
+    columns: stdout.columns ?? 80,
+    isTty: stdout.isTTY === true,
+    // NO_COLOR 只要存在就关闭颜色，兼容 https://no-color.org/ 的通用约定。
+    color: stdout.isTTY === true && process.env.NO_COLOR === undefined,
+  })
+  if (banner) console.log(`\n${banner}\n`)
 }
 
 function formatCompletionStats(usage: ModelUsage | undefined, stopReason: string | undefined): string {
