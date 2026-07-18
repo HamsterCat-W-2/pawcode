@@ -43,6 +43,7 @@ c66abe8 refactor: split domain types by concept
 - 交互会话命令：`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
 - `--json` 严格 NDJSON；stdout 不混入人类装饰输出，非交互副作用默认拒绝。
+- 人类可读输出默认隐藏成功工具明细；`--verbose` 才显示参数和结果长度，工具失败始终显示。
 
 设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
 

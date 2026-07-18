@@ -9,6 +9,7 @@ import { loadConfig, type PawCodeConfig } from './config/config.js'
 import type { ModelUsage } from './domain/model.js'
 import { PiAiModelAdapter } from './models/pi-ai-model-adapter.js'
 import { encodeJsonLine, toJsonEvent } from './output/json-renderer.js'
+import { formatToolFinished, formatToolStarted, type HumanToolLine } from './output/tool-event-renderer.js'
 import { PermissionManager } from './permissions/permission-manager.js'
 import type { AgentEvent } from './runtime/agent-event.js'
 import { AgentRuntime, createInitialMessages } from './runtime/agent-runtime.js'
@@ -39,6 +40,7 @@ interface CliOptions {
   name?: string
   listSessions?: boolean
   json?: boolean
+  verbose?: boolean
 }
 
 interface RuntimeBundle {
@@ -64,6 +66,7 @@ const program = new Command()
   .option('-n, --name <name>', '为新会话或恢复的会话设置名称')
   .option('--list-sessions', '列出当前项目的会话后退出')
   .option('--json', '以严格 NDJSON 输出运行事件')
+  .option('--verbose', '显示工具调用参数和成功结果明细')
   .parse()
 
 const promptParts = program.args as string[]
@@ -389,10 +392,10 @@ function renderHumanEvent(event: AgentEvent, state: RenderState): void {
     case 'tool_started':
       if (state.streamingText) stdout.write('\n')
       state.streamingText = false
-      console.log(`\n🔧 ${event.name} ${event.argumentsJson}`)
+      writeHumanToolLine(formatToolStarted(event.name, event.argumentsJson, options.verbose ?? false))
       return
     case 'tool_finished':
-      console.log(`✓ ${event.name} 返回 ${event.result.length} 个字符`)
+      writeHumanToolLine(formatToolFinished(event.name, event.result, options.verbose ?? false))
       return
     case 'context_compacted':
       console.log(
@@ -417,6 +420,12 @@ function renderHumanEvent(event: AgentEvent, state: RenderState): void {
       state.streamingText = false
       console.error(`\n错误：${event.error.message}\n`)
   }
+}
+
+function writeHumanToolLine(line: HumanToolLine | undefined): void {
+  if (!line) return
+  if (line.level === 'error') console.error(line.text)
+  else console.log(line.text)
 }
 
 function renderJsonEvent(event: AgentEvent): void {

@@ -117,6 +117,12 @@ pnpm dev --allow-write --allow-command "pnpm test" "修复问题并运行测试"
 
 `--allow-command` 可重复设置，按规范化后的命令前缀匹配。`rm`、`sudo`、Shell `-c` 和破坏性 Git 子命令始终拒绝。
 
+普通交互默认隐藏成功工具的调用参数和结果字符数，工具失败仍会显示。调试时可恢复完整明细：
+
+```bash
+pnpm dev --verbose
+```
+
 指定模型和最大轮数：
 
 ```bash
@@ -143,6 +149,7 @@ pnpm dev --list-sessions --json
 ```
 
 JSON 模式 stdout 每行都是可解析事件，不输出颜色、Emoji 或权限询问。副作用默认拒绝，需要通过 `--allow-write` 或 `--allow-command` 预授权。
+`--verbose` 只控制人类可读输出，不改变 JSON 事件内容。
 
 ## 检查、测试与构建
 
