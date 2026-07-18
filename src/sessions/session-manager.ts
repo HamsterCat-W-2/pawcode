@@ -97,13 +97,15 @@ export class SessionManager {
     await this.persist()
   }
 
-  async markRunning(): Promise<void> {
+  async markRunning(processId = process.pid): Promise<void> {
     this.record.lastRunStatus = 'running'
+    this.record.activeProcessId = processId
     await this.persist()
   }
 
   async markCompleted(usage?: ModelUsage): Promise<void> {
     this.record.lastRunStatus = 'completed'
+    delete this.record.activeProcessId
     // 会话用量跨多次用户请求累计，单次 run 的多轮汇总由 Runtime 负责。
     const cumulativeUsage = addModelUsage(this.record.cumulativeUsage, usage)
     if (cumulativeUsage) this.record.cumulativeUsage = cumulativeUsage
@@ -112,6 +114,13 @@ export class SessionManager {
 
   async markFailed(): Promise<void> {
     this.record.lastRunStatus = 'failed'
+    delete this.record.activeProcessId
+    await this.persist()
+  }
+
+  async markCancelled(): Promise<void> {
+    this.record.lastRunStatus = 'cancelled'
+    delete this.record.activeProcessId
     await this.persist()
   }
 
@@ -119,6 +128,7 @@ export class SessionManager {
     this.record.title = '新会话'
     this.record.lastRunStatus = 'idle'
     this.record.compactionCount = 0
+    delete this.record.activeProcessId
     delete this.record.cumulativeUsage
     await this.persist()
   }

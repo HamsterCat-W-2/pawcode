@@ -41,4 +41,18 @@ describe('PermissionManager', () => {
       }),
     ).resolves.toEqual({ allowed: false, reason: '禁止执行危险程序 rm' })
   })
+
+  it('权限确认响应当前 run 的取消信号', async () => {
+    const controller = new AbortController()
+    const manager = new PermissionManager({
+      confirm: async (_request, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('确认已取消')), { once: true })
+        }),
+    })
+
+    const pending = manager.authorize(writeRequest, controller.signal)
+    controller.abort()
+    await expect(pending).rejects.toThrow('确认已取消')
+  })
 })

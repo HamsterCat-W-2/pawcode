@@ -9,6 +9,8 @@ const environmentSchema = z.object({
   MAX_TOOL_OUTPUT_CHARS: z.coerce.number().int().positive().default(20_000),
   CONTEXT_COMPACT_THRESHOLD: z.coerce.number().positive().max(1).default(0.8),
   CONTEXT_KEEP_RECENT_TOKENS: z.coerce.number().int().positive().default(20_000),
+  MODEL_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(2),
+  MODEL_RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().max(60_000).default(500),
 })
 
 export interface PawCodeConfig {
@@ -20,6 +22,8 @@ export interface PawCodeConfig {
   maxToolOutputChars: number
   contextCompactThreshold: number
   contextKeepRecentTokens: number
+  modelMaxRetries: number
+  modelRetryBaseDelayMs: number
 }
 
 export interface ConfigDefaults {
@@ -50,5 +54,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, default
     maxToolOutputChars: result.data.MAX_TOOL_OUTPUT_CHARS,
     contextCompactThreshold: result.data.CONTEXT_COMPACT_THRESHOLD,
     contextKeepRecentTokens: result.data.CONTEXT_KEEP_RECENT_TOKENS,
+    modelMaxRetries: result.data.MODEL_MAX_RETRIES,
+    modelRetryBaseDelayMs: result.data.MODEL_RETRY_BASE_DELAY_MS,
   }
 }

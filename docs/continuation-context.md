@@ -5,11 +5,11 @@
 ## 当前状态
 
 - 项目：Node.js、TypeScript、pnpm 编写的终端 AI 编程 Agent。
-- 版本：v0.4。
+- 版本：v0.4.1。
 - 路径：`/Users/guoxuanloveweiyan/Documents/guoxuan/programe/pawcode`。
 - 分支：`codex/session-persistence-resume`。
 - 当前分支跟踪 `origin/codex/session-persistence-resume`；ahead/behind 和工作区状态继续以实际 `git status` 为准。
-- 当前 HEAD 包含 v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner。
+- 当前分支包含 v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner，以及 v0.4.1 错误恢复加固。
 - `.env` 已忽略，绝不能提交密钥。
 
 关键历史：
@@ -51,8 +51,12 @@ c66abe8 refactor: split domain types by concept
 - `--json` 严格 NDJSON；stdout 不混入人类装饰输出，非交互副作用默认拒绝。
 - 人类可读输出默认隐藏成功工具明细；`--verbose` 才显示参数和结果长度，工具失败始终显示。
 - 交互 TTY 显示零依赖 `PAWCODE` Banner；窄终端自动降级，`NO_COLOR` 关闭颜色，JSON 和重定向不显示。
+- v0.4.1：零输出瞬时模型错误有限重试；一旦产生流事件即停止重试，避免重复输出和副作用。
+- v0.4.1：用户取消保存部分回答并标记 `cancelled`；遗留 `running` 会话在确认 PID 失效后标记 `interrupted`。
+- v0.4.1：会话、`write_file` 和 `apply_patch` 使用同目录临时文件、`fsync` 和原子替换。
+- v0.4.1：权限确认响应 Esc/Ctrl+C 的 AbortSignal，stdout `EPIPE` 正常退出。
 
-设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
+设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
 
 ## 必须保持的架构边界
 
@@ -62,6 +66,8 @@ CLI
 AgentRuntime
  ↓ ModelRequest / ModelResponse
 ModelAdapter
+ ↓ zero-output transient retry
+RetryingModelAdapter
  ↓ ModelEvent
 PiAiModelAdapter
  ↓ pi-ai
@@ -108,6 +114,7 @@ ContextCompactor
 src/
 ├── cli.ts                         CLI、流式渲染、交互授权、Banner 和 usage 展示
 ├── config/config.ts               环境变量读取与校验
+├── filesystem/atomic-file.ts      fsync、原子替换与死亡进程临时文件清理
 ├── domain/
 │   ├── message.ts                 PawCode 消息协议
 │   ├── model.ts                   请求、响应、usage 和 cost
@@ -115,10 +122,12 @@ src/
 ├── models/
 │   ├── model-adapter.ts           Runtime 依赖的稳定接口
 │   ├── model-event.ts             供应商无关流事件
-│   └── pi-ai-model-adapter.ts     唯一 pi-ai 翻译层
+│   ├── pi-ai-model-adapter.ts     唯一 pi-ai 翻译层
+│   └── retrying-model-adapter.ts  仅限零输出瞬时错误的安全重试
 ├── output/
 │   ├── banner-renderer.ts          响应式、可关闭颜色的交互启动页
 │   ├── json-renderer.ts            AgentEvent → NDJSON
+│   ├── output-errors.ts            EPIPE 等输出错误分类
 │   ├── session-display.ts          恢复历史回放与退出续聊提示
 │   └── tool-event-renderer.ts      默认安静、verbose 可见的工具事件格式
 ├── permissions/
@@ -263,6 +272,17 @@ Tool.execute()
 - `--json` stdout 每行都是 schema version 1 的 JSON 事件；错误对象显式转换，诊断和恢复警告写 stderr。
 - JSON 模式不询问权限，只接受 `--allow-write` 和 `--allow-command` 预授权。
 
+### v0.4.1 错误恢复
+
+- `RetryingModelAdapter` 默认重试 2 次，退避基数 500ms；只匹配 408、429、5xx、限流、过载和明确网络错误。
+- 已经向 Runtime 产生任意事件后禁止重试；认证、参数、上下文超限和用户取消禁止重试。
+- Runtime 在模型流失败或取消时保存已展示的部分 assistant 文本；取消产生 `cancelled` 事件和会话状态。
+- `running` 会话保存活跃 PID；启动扫描只把 PID 不存在的记录改为 `interrupted`，不修改 `updatedAt`。
+- 原子文件写入使用目标同目录临时文件、文件 `fsync` 和 `rename`；已有工作区文件保留权限位。
+- 临时文件包含 PID，只清理死亡进程遗留项，不能影响并发运行的 PawCode。
+- 权限确认接收 run AbortSignal；命令取消/超时会警告副作用可能已经部分发生。
+- 命令副作用不自动回滚，跨供应商故障转移也不在 v0.4.1 范围内。
+
 ## 配置与运行
 
 要求 Node.js `>=22.19.0`、pnpm 11。
@@ -271,6 +291,8 @@ Tool.execute()
 MODEL_PROVIDER=供应商ID
 MODEL_NAME=模型ID
 MODEL_API_KEY=模型服务密钥
+MODEL_MAX_RETRIES=2
+MODEL_RETRY_BASE_DELAY_MS=500
 MAX_AGENT_TURNS=10
 MAX_TOOL_OUTPUT_CHARS=20000
 CONTEXT_COMPACT_THRESHOLD=0.8
@@ -323,11 +345,11 @@ pnpm build
 
 `tsx` 在受限沙箱中可能因无法创建 IPC 管道而报 `EPERM`，构建后的 `node dist/cli.js` 可正常运行。
 
-当前 v0.4 分支验证：
+当前 v0.4.1 验证基线：
 
 - Prettier、TypeScript 和构建通过。
-- 14 个测试文件、45 个测试通过。
-- `node dist/cli.js --version` 输出 `0.4.0`。
+- 17 个测试文件、56 个测试通过。
+- `node dist/cli.js --version` 输出 `0.4.1`。
 - 构建后 `--list-sessions --json` 输出可解析的空 sessions 事件。
 - JSON 启动错误和缺少 prompt 错误均只输出合法 JSON 行。
 - 默认隐藏成功工具明细，`--verbose` 恢复展示，失败结果始终可见。
@@ -336,18 +358,18 @@ pnpm build
 
 ## 下一步
 
-1. 使用真实模型创建并 `/rename` 会话，退出后分别用 `--continue`、`--resume` 选择器、`--resume <id|name>` 和 `/resume` 验证连续对话。
-2. 验证 `--fork-session` 与 `/branch` 产生新 ID、保留原历史且不继承会话权限规则。
-3. 将压缩阈值临时调低，人工确认 `context_compacted`、摘要质量、usage 累加和恢复后的压缩历史。
-4. 验证 `--json` 长回答、工具调用、权限拒绝与显式 allow 的每行 JSON。
-5. 人工验收通过后，将 `codex/session-persistence-resume` 合并到目标分支并准备 v0.4 发布说明。
+1. 用真实模型或可控代理返回 429/503，确认零输出重试和产生 delta 后不重试。
+2. 运行中按 Esc，确认部分回答保存、状态为 `cancelled`，恢复后可见。
+3. 模拟遗留 `running` 会话，确认下次启动改为 `interrupted` 且不改变最近会话排序。
+4. 人工验证权限确认期间 Esc、命令取消/超时警告和 `pawcode --help | head` 断管行为。
+5. 人工验收通过后，将 v0.4.1 合并到目标分支并准备发布说明。
 6. v0.5：MCP Client、Hooks、自定义命令和子 Agent。
 
 ## 新对话起始提示
 
 ```text
-请先阅读 docs/continuation-context.md，并按需阅读 docs/v0.4-design.md、
-docs/v0.3-design.md 和 docs/streaming-output.md，然后检查 git status --short --branch。保持 PawCode
+请先阅读 docs/continuation-context.md，并按需阅读 docs/v0.4.1-error-recovery-design.md、
+docs/v0.4-design.md、docs/v0.3-design.md 和 docs/streaming-output.md，然后检查 git status --short --branch。保持 PawCode
 Domain 与 PiAiModelAdapter 的边界；所有副作用必须经过 ToolRegistry 和
 PermissionManager。新增或修改代码必须添加便于 review 的中文注释；修改后运行格式、
 类型、测试和构建验证。

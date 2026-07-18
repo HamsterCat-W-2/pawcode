@@ -87,4 +87,24 @@ describe('SessionStore', () => {
     await expect(store.list()).resolves.toEqual([])
     await expect(store.load('broken')).rejects.toThrow('无法读取会话')
   })
+
+  it('启动恢复遗留 running 状态，但不干扰仍活跃的进程', async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), 'pawcode-interrupted-'))
+    const store = await SessionStore.create(workspace)
+    const stale = await SessionManager.create(store, 'provider', 'model', createInitialMessages())
+    const active = await SessionManager.create(store, 'provider', 'model', createInitialMessages())
+    await stale.markRunning(111)
+    await active.markRunning(222)
+    const staleUpdatedAt = stale.snapshot().updatedAt
+
+    await expect(store.recoverInterruptedSessions((pid) => pid === 222)).resolves.toBe(1)
+    await expect(store.load(stale.snapshot().id)).resolves.toMatchObject({
+      lastRunStatus: 'interrupted',
+      updatedAt: staleUpdatedAt,
+    })
+    await expect(store.load(active.snapshot().id)).resolves.toMatchObject({
+      lastRunStatus: 'running',
+      activeProcessId: 222,
+    })
+  })
 })

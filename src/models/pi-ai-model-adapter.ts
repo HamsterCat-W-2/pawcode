@@ -68,7 +68,8 @@ export class PiAiModelAdapter implements ModelAdapter {
       controller.abort()
     }, this.timeoutMs)
     const forwardAbort = () => controller.abort()
-    request.signal?.addEventListener('abort', forwardAbort, { once: true })
+    if (request.signal?.aborted) controller.abort()
+    else request.signal?.addEventListener('abort', forwardAbort, { once: true })
 
     try {
       const stream = this.models.stream(this.selectedModel, toPiContext(request, this.selectedModel), {

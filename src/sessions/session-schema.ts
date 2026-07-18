@@ -60,7 +60,9 @@ export interface SessionRecord {
   model: string
   messages: Message[]
   cumulativeUsage?: ModelUsage
-  lastRunStatus: 'idle' | 'running' | 'completed' | 'failed'
+  lastRunStatus: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+  /** 标识正在执行该会话的本地进程，用于避免把另一个活跃 PawCode 误判为崩溃。 */
+  activeProcessId?: number
   compactionCount: number
 }
 
@@ -82,7 +84,8 @@ export const sessionRecordSchema = z.object({
   model: z.string().min(1),
   messages: z.array(messageSchema).min(1),
   cumulativeUsage: modelUsageSchema.optional(),
-  lastRunStatus: z.enum(['idle', 'running', 'completed', 'failed']),
+  lastRunStatus: z.enum(['idle', 'running', 'completed', 'failed', 'cancelled', 'interrupted']),
+  activeProcessId: z.number().int().positive().optional(),
   compactionCount: z.number().int().nonnegative(),
 }) as z.ZodType<SessionRecord>
 

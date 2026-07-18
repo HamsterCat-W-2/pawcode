@@ -1,5 +1,6 @@
-import { mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { atomicWriteFile } from '../filesystem/atomic-file.js'
 
 const ignoredDirectories = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.next'])
 
@@ -47,7 +48,7 @@ export class WorkspaceFiles {
     assertContentSize(content)
     const target = await this.resolveForWrite(relativePath)
     await mkdir(path.dirname(target), { recursive: true })
-    await writeFile(target, content, 'utf8')
+    await atomicWriteFile(target, content)
     return `已写入 ${path.relative(this.root, target)}（${Buffer.byteLength(content, 'utf8')} bytes）`
   }
 
@@ -68,7 +69,7 @@ export class WorkspaceFiles {
 
     const updated = replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText)
     assertContentSize(updated)
-    await writeFile(target, updated, 'utf8')
+    await atomicWriteFile(target, updated)
     return `已修改 ${path.relative(this.root, target)}（替换 ${replaceAll ? occurrences : 1} 处）`
   }
 

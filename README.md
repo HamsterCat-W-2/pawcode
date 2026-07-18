@@ -1,6 +1,6 @@
 # PawCode
 
-PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 Agent。当前 v0.4 可以在统一权限控制下读写项目、执行命令、持久化项目级会话、压缩长上下文并输出 NDJSON，通过 `pi-ai` 兼容多个模型供应商，同时保留自己的 Agent Runtime、工具系统和安全边界。
+PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 Agent。当前 v0.4.1 可以在统一权限控制下读写项目、执行命令、持久化项目级会话、压缩长上下文并输出 NDJSON，通过 `pi-ai` 兼容多个模型供应商，同时提供模型重试、原子写入和异常中断恢复。
 
 ## 当前能力
 
@@ -61,6 +61,8 @@ MAX_AGENT_TURNS=10
 MAX_TOOL_OUTPUT_CHARS=20000
 CONTEXT_COMPACT_THRESHOLD=0.8
 CONTEXT_KEEP_RECENT_TOKENS=20000
+MODEL_MAX_RETRIES=2
+MODEL_RETRY_BASE_DELAY_MS=500
 ```
 
 小米 MiMo Token Plan（中国区）：
@@ -144,6 +146,14 @@ pnpm dev --list-sessions
 `--continue/-c` 恢复最近会话；`--resume/-r` 无参数打开编号选择器，有参数时按 ID 或 `/rename` 设置的名称恢复；`--fork-session` 复制历史并生成新会话 ID。交互模式还提供 `/new`、`/sessions`、`/resume [id|name]`、`/rename [name]` 和 `/branch [name]`。不同工作区的会话不能互相恢复；切换 Git 分支时会显示警告。
 
 交互恢复会话时会回放用户、助手和压缩摘要，不展示内部 system prompt、工具结果或供应商私有数据。在输入提示处执行 `/exit` 或按 `Ctrl+C` 后，都会显示可复制的 `pawcode --resume <name-or-id>` 和 `pawcode --continue` 命令；模型生成期间按 `Esc` 或 `Ctrl+C` 只取消当前请求，输入态按 `Esc` 清空当前输入。PawCode 暂不实现 Claude Code 的双击 `Esc` rewind。
+
+### 错误恢复
+
+- 408、429、5xx 和明确网络瞬时错误在尚未输出任何流事件时自动重试，默认最多 2 次。
+- 已经产生文本或工具事件后不自动重试，避免重复输出或副作用。
+- `write_file`、`apply_patch` 和会话保存使用临时文件、`fsync` 与原子替换。
+- 用户取消保存已产生的部分回答并记录为 `cancelled`；异常退出遗留的 `running` 会话在下次启动时标记为 `interrupted`。
+- 命令取消或超时不能回滚已经产生的副作用，PawCode 会提示使用 `git_diff` 检查。
 
 机器调用使用 NDJSON：
 
@@ -242,4 +252,4 @@ v0.5：
 
 `pi-ai` 只负责模型通信，不负责 PawCode 的工具权限。PawCode 默认拒绝非交互写入和命令操作；交互授权只在当前进程内有效。文件工具会检查工作区边界和符号链接，命令工具不经过 Shell，但这些措施不等同于操作系统沙箱。仍应避免在包含不必要敏感数据的目录中启动，因为模型读取到的工具结果会发送到配置的模型服务。
 
-详细设计见 [v0.3](docs/v0.3-design.md) 和 [v0.4](docs/v0.4-design.md) 技术文档。
+详细设计见 [v0.3](docs/v0.3-design.md)、[v0.4](docs/v0.4-design.md) 和 [v0.4.1 错误恢复](docs/v0.4.1-error-recovery-design.md) 技术文档。

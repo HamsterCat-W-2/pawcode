@@ -10,7 +10,9 @@ import { loadConfig, type PawCodeConfig } from './config/config.js'
 import type { Message } from './domain/message.js'
 import type { ModelUsage } from './domain/model.js'
 import { PiAiModelAdapter } from './models/pi-ai-model-adapter.js'
+import { RetryingModelAdapter } from './models/retrying-model-adapter.js'
 import { renderBanner } from './output/banner-renderer.js'
+import { isBrokenPipeError } from './output/output-errors.js'
 import { encodeJsonLine, toJsonEvent } from './output/json-renderer.js'
 import { renderResumeHint, renderSessionHistory } from './output/session-display.js'
 import { formatToolFinished, formatToolStarted, type HumanToolLine } from './output/tool-event-renderer.js'
@@ -32,6 +34,12 @@ import { ToolRegistry } from './tools/tool-registry.js'
 import { WriteFileTool } from './tools/write-file-tool.js'
 
 const execFileAsync = promisify(execFile)
+
+// 管道消费者提前关闭（例如 `| head`）属于正常结束，不应输出未捕获的 EPIPE 堆栈。
+stdout.on('error', (error) => {
+  if (isBrokenPipeError(error)) process.exit(0)
+  throw error
+})
 
 interface CliOptions {
   provider?: string
@@ -58,7 +66,7 @@ interface RuntimeBundle {
 const program = new Command()
   .name('paw')
   .description('PawCode：终端中的 AI 编程伙伴')
-  .version('0.4.0')
+  .version('0.4.1')
   .argument('[prompt...]', '直接执行一次问题；省略时进入交互模式')
   .option('--provider <name>', '覆盖 .env 或恢复会话中的模型供应商')
   .option('--model <name>', '覆盖 .env 或恢复会话中的模型名称')
@@ -85,6 +93,7 @@ async function main(): Promise<void> {
 
   // 会话目录始终从当前工作区创建，不接受 CLI 路径参数，避免跨项目恢复。
   const store = await SessionStore.create(process.cwd())
+  await store.recoverInterruptedSessions()
   if (options.listSessions) {
     renderSessions(await store.list(), options.json ?? false)
     return
@@ -109,6 +118,10 @@ async function main(): Promise<void> {
   const provider = options.provider ?? resumed?.provider ?? config.provider
   const model = options.model ?? resumed?.model ?? config.model
   const maxTurns = options.maxTurns ?? config.maxAgentTurns
+
+  if (resumed?.lastRunStatus === 'interrupted') {
+    console.error('提示：该会话上次运行异常中断，已恢复最后一次成功保存的消息。')
+  }
 
   if (resumed && (provider !== resumed.provider || model !== resumed.model)) {
     console.error(
@@ -149,9 +162,13 @@ async function main(): Promise<void> {
   }
 
   const readline = createInterface({ input: stdin, output: stdout })
-  const permissionManager = createPermissionManager(options, async (description) => {
+  const permissionManager = createPermissionManager(options, async (description, signal) => {
     console.log(`\n⚠️  ${description}`)
-    const answer = (await readline.question('允许？[y] 本次 / [a] 本会话同一操作 / [N] 拒绝：')).trim().toLowerCase()
+    // 权限问题与当前 run 共用 AbortSignal，Esc/Ctrl+C 可以立即退出等待而不是卡在确认框。
+    const rawAnswer = signal
+      ? await readline.question('允许？[y] 本次 / [a] 本会话同一操作 / [N] 拒绝：', { signal })
+      : await readline.question('允许？[y] 本次 / [a] 本会话同一操作 / [N] 拒绝：')
+    const answer = rawAnswer.trim().toLowerCase()
     if (answer === 'a') return 'allow_session'
     if (answer === 'y' || answer === 'yes') return 'allow_once'
     return 'deny'
@@ -202,11 +219,15 @@ function createRuntimeBundle(
   config: PawCodeConfig,
   permissionManager: PermissionManager,
 ): RuntimeBundle {
-  const model = new PiAiModelAdapter({
+  const providerModel = new PiAiModelAdapter({
     provider,
     model: modelName,
     ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
     ...(config.apiKey ? { apiKey: config.apiKey } : {}),
+  })
+  const model = new RetryingModelAdapter(providerModel, {
+    maxRetries: config.modelMaxRetries,
+    baseDelayMs: config.modelRetryBaseDelayMs,
   })
   const compactor = new ContextCompactor({
     model,
@@ -241,12 +262,12 @@ function createRuntimeBundle(
 
 function createPermissionManager(
   cliOptions: CliOptions,
-  confirm?: (description: string) => Promise<'allow_once' | 'allow_session' | 'deny'>,
+  confirm?: (description: string, signal?: AbortSignal) => Promise<'allow_once' | 'allow_session' | 'deny'>,
 ): PermissionManager {
   return new PermissionManager({
     ...(cliOptions.allowWrite ? { allowWrite: true } : {}),
     ...(cliOptions.allowCommand ? { allowedCommandPrefixes: cliOptions.allowCommand } : {}),
-    ...(confirm ? { confirm: (request) => confirm(request.description) } : {}),
+    ...(confirm ? { confirm: (request, signal) => confirm(request.description, signal) } : {}),
   })
 }
 
@@ -312,7 +333,7 @@ async function runInteractive(
       if (input === '/status') {
         const record = bundle.session.snapshot()
         console.log(
-          `会话：${record.id}\n标题：${record.title}\n模型：${bundle.provider}/${bundle.model}\n消息数：${bundle.runtime.messageCount()}\n压缩次数：${record.compactionCount}\n`,
+          `会话：${record.id}\n标题：${record.title}\n状态：${record.lastRunStatus}\n模型：${bundle.provider}/${bundle.model}\n消息数：${bundle.runtime.messageCount()}\n压缩次数：${record.compactionCount}\n`,
         )
         continue
       }
@@ -415,6 +436,9 @@ async function renderRun(
       } else if (event.type === 'failed') {
         terminalEventSeen = true
         await bundle.session.markFailed()
+      } else if (event.type === 'cancelled') {
+        terminalEventSeen = true
+        await bundle.session.markCancelled()
       }
     }
     if (!terminalEventSeen) await bundle.session.markFailed()
@@ -475,6 +499,11 @@ function renderHumanEvent(event: AgentEvent, state: RenderState): void {
       if (event.usage || event.stopReason) console.log(formatCompletionStats(event.usage, event.stopReason))
       if (event.stopReason === 'length') console.log('提示：模型达到单次输出上限，已保留当前内容，可输入“继续”。\n')
       return
+    case 'cancelled':
+      if (state.streamingText) stdout.write('\n')
+      state.streamingText = false
+      console.log('\n已取消当前请求，已保留产生的内容。\n')
+      return
     case 'failed':
       if (state.streamingText) stdout.write('\n')
       state.streamingText = false
@@ -504,7 +533,7 @@ function renderSessions(sessions: SessionSummary[], json: boolean): void {
   for (const session of sessions) {
     const label = session.name ? `${session.name} — ${session.title}` : session.title
     console.log(
-      `${session.id}  ${session.updatedAt}  ${session.provider}/${session.model}  ${session.messageCount} 条  ${label}`,
+      `${session.id}  ${session.updatedAt}  ${session.provider}/${session.model}  ${session.messageCount} 条  ${session.lastRunStatus}  ${label}`,
     )
   }
 }
@@ -540,7 +569,7 @@ function printInteractiveHeader(bundle: RuntimeBundle): void {
     ? `${session.name} (${session.id.slice(0, 8)})`
     : `${session.id.slice(0, 8)} — ${session.title}`
   const banner = renderBanner({
-    version: '0.4.0',
+    version: '0.4.1',
     provider: bundle.provider,
     model: bundle.model,
     workspace: process.cwd(),

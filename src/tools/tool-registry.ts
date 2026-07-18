@@ -30,7 +30,7 @@ export class ToolRegistry {
       const permissionRequest = await tool.permissionRequest?.(argumentsJson, context)
       if (permissionRequest) {
         // 权限检查放在 Registry，而不是交给 Runtime 或具体工具自行决定，确保入口唯一。
-        const permission = await context.permissionManager?.authorize(permissionRequest)
+        const permission = await context.permissionManager?.authorize(permissionRequest, context.signal)
         if (!permission?.allowed) {
           return `工具执行失败：权限被拒绝：${permission?.reason ?? '没有配置权限管理器'}`
         }

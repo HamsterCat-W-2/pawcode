@@ -19,7 +19,7 @@ export interface PermissionResult {
 export interface PermissionManagerOptions {
   allowWrite?: boolean
   allowedCommandPrefixes?: string[]
-  confirm?: (request: PermissionRequest) => Promise<PermissionConfirmation>
+  confirm?: (request: PermissionRequest, signal?: AbortSignal) => Promise<PermissionConfirmation>
 }
 
 export class PermissionManager {
@@ -45,7 +45,7 @@ export class PermissionManager {
     return this.options.confirm ? 'ask' : 'deny'
   }
 
-  async authorize(request: PermissionRequest): Promise<PermissionResult> {
+  async authorize(request: PermissionRequest, signal?: AbortSignal): Promise<PermissionResult> {
     const decision = this.evaluate(request)
     if (decision === 'allow') return { allowed: true }
     if (decision === 'deny') {
@@ -55,7 +55,8 @@ export class PermissionManager {
       }
     }
 
-    const confirmation = await this.options.confirm?.(request)
+    signal?.throwIfAborted()
+    const confirmation = await this.options.confirm?.(request, signal)
     if (confirmation === 'allow_session') {
       // 精确到 capability、tool 和 resource，避免允许一个文件后放开所有写入。
       this.sessionRules.add(ruleKey(request))

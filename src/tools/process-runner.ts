@@ -75,11 +75,11 @@ export function runProcess(command: string, args: string[], options: ProcessOpti
       settled = true
       cleanup()
       if (aborted) {
-        reject(new Error('命令已取消'))
+        reject(new Error('命令已取消；进程可能已经产生部分副作用，请使用 git_diff 检查'))
         return
       }
       if (timedOut) {
-        reject(new Error(`命令超过 ${options.timeoutMs}ms`))
+        reject(new Error(`命令超过 ${options.timeoutMs}ms；进程可能已经产生部分副作用，请使用 git_diff 检查`))
         return
       }
       resolve({ stdout, stderr, exitCode })

@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, realpath, rename, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath } from 'node:fs/promises'
 import path from 'node:path'
+import { atomicWriteFile, cleanupOrphanAtomicFiles } from '../filesystem/atomic-file.js'
 import { sessionRecordSchema, type SessionRecord, type SessionSummary } from './session-schema.js'
 
 /**
@@ -20,6 +20,7 @@ export class SessionStore {
     const resolvedWorkspace = await realpath(workspace)
     const sessionsDirectory = path.join(resolvedWorkspace, '.pawcode', 'sessions')
     await mkdir(sessionsDirectory, { recursive: true, mode: 0o700 })
+    await cleanupOrphanAtomicFiles(sessionsDirectory)
     return new SessionStore(resolvedWorkspace, sessionsDirectory)
   }
 
@@ -39,16 +40,8 @@ export class SessionStore {
       throw new Error(`会话包含无法序列化的数据：${error instanceof Error ? error.message : String(error)}`)
     }
 
-    const target = this.sessionPath(validated.id)
-    const temporary = path.join(this.sessionsDirectory, `.${validated.id}.${randomUUID()}.tmp`)
-    try {
-      // 临时文件与目标文件位于同一目录，rename 可作为原子替换；0600 避免会话内容被其他用户读取。
-      await writeFile(temporary, serialized, { encoding: 'utf8', mode: 0o600 })
-      await rename(temporary, target)
-    } catch (error) {
-      await unlink(temporary).catch(() => undefined)
-      throw error
-    }
+    // 临时文件与目标文件位于同一目录，rename 原子替换；0600 避免会话内容被其他用户读取。
+    await atomicWriteFile(this.sessionPath(validated.id), serialized, { mode: 0o600 })
   }
 
   async load(id: string): Promise<SessionRecord> {
@@ -107,6 +100,22 @@ export class SessionStore {
     return latest ? this.load(latest.id) : undefined
   }
 
+  async recoverInterruptedSessions(isProcessAlive: (processId: number) => boolean = processIsAlive): Promise<number> {
+    const running = (await this.list()).filter((session) => session.lastRunStatus === 'running')
+    let recovered = 0
+    for (const summary of running) {
+      const record = await this.load(summary.id)
+      // 允许同一项目同时运行多个 PawCode；只有进程不存在或旧记录没有 PID 时才判定为异常中断。
+      if (record.activeProcessId && isProcessAlive(record.activeProcessId)) continue
+      record.lastRunStatus = 'interrupted'
+      delete record.activeProcessId
+      // Store.save 不修改 updatedAt，因此恢复扫描不会改变 --continue 的最近会话排序。
+      await this.save(record)
+      recovered += 1
+    }
+    return recovered
+  }
+
   async resolve(identifier: string): Promise<SessionRecord> {
     // ID 和用户命名都只做精确匹配，确保脚本中的 --resume 解析结果稳定、可预测。
     const matches = (await this.list()).filter((session) => session.id === identifier || session.name === identifier)
@@ -121,5 +130,15 @@ export class SessionStore {
     // 会话 ID 最终会成为文件名，因此必须在 path.join 前阻断路径分隔符和目录穿越片段。
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw new Error(`非法会话 ID：${id}`)
     return path.join(this.sessionsDirectory, `${id}.json`)
+  }
+}
+
+function processIsAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0)
+    return true
+  } catch (error) {
+    // EPERM 表示进程存在但当前用户无权发送信号，仍应视为活跃。
+    return error instanceof Error && 'code' in error && error.code === 'EPERM'
   }
 }

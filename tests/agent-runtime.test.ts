@@ -134,6 +134,24 @@ describe('AgentRuntime', () => {
       type: 'failed',
       error: new Error('流连接失败'),
     })
+    expect(runtime.messagesSnapshot().at(-1)).toEqual({ role: 'assistant', content: '部分回答' })
+  })
+
+  it('用户取消时保存部分回答并产生 cancelled 事件', async () => {
+    const controller = new AbortController()
+    const runtime = new AgentRuntime({
+      model: new FailingModel(),
+      tools: new ToolRegistry([]),
+      toolContext: { workspace: process.cwd(), maxOutputChars: 10_000 },
+      maxTurns: 1,
+    })
+    controller.abort()
+
+    const events = []
+    for await (const event of runtime.run('开始', controller.signal)) events.push(event)
+
+    expect(events.at(-1)).toMatchObject({ type: 'cancelled', text: '部分回答' })
+    expect(runtime.messagesSnapshot().at(-1)).toEqual({ role: 'assistant', content: '部分回答' })
   })
 
   it('累加多轮模型用量并返回最终停止原因', async () => {

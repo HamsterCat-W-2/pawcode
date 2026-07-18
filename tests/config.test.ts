@@ -17,6 +17,8 @@ describe('loadConfig', () => {
       maxToolOutputChars: 20_000,
       contextCompactThreshold: 0.8,
       contextKeepRecentTokens: 20_000,
+      modelMaxRetries: 2,
+      modelRetryBaseDelayMs: 500,
     })
   })
 

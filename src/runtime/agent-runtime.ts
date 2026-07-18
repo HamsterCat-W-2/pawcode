@@ -56,6 +56,7 @@ export class AgentRuntime {
     // 一次用户请求可能包含多个模型—工具轮次，CLI 应展示整个 run 的合计值。
     let totalUsage: ModelUsage | undefined
     let stopReason: string | undefined
+    let pendingAssistantText = ''
 
     try {
       this.messages.push({ role: 'user', content: input })
@@ -81,6 +82,7 @@ export class AgentRuntime {
 
       for (let turn = 1; turn <= this.options.maxTurns; turn += 1) {
         yield { type: 'turn_started', turn }
+        pendingAssistantText = ''
 
         let response: ModelResponse | undefined
 
@@ -92,6 +94,7 @@ export class AgentRuntime {
         })) {
           switch (event.type) {
             case 'text_delta':
+              pendingAssistantText += event.text
               yield { type: 'text_delta', text: event.text }
               break
             case 'thinking_delta':
@@ -119,6 +122,8 @@ export class AgentRuntime {
           ...(response.toolCalls.length > 0 ? { tool_calls: response.toolCalls } : {}),
           ...(response.providerData !== undefined ? { providerData: response.providerData } : {}),
         })
+        // 完整 response 已进入历史，后续错误不能再把流式文本作为“部分回答”重复保存。
+        pendingAssistantText = ''
         await this.notifyMessagesChanged()
 
         if (response.toolCalls.length === 0) {
@@ -158,6 +163,15 @@ export class AgentRuntime {
         error: new Error(`达到最大 Agent 轮数 ${this.options.maxTurns}`),
       }
     } catch (error) {
+      if (pendingAssistantText) {
+        // 供应商流在 completed 前失败时仍保留用户已经看到的文本，恢复会话不会凭空丢失半段回答。
+        this.messages.push({ role: 'assistant', content: pendingAssistantText })
+        await this.notifyMessagesChanged()
+      }
+      if (signal?.aborted) {
+        yield { type: 'cancelled', ...(pendingAssistantText ? { text: pendingAssistantText } : {}) }
+        return
+      }
       yield {
         type: 'failed',
         error: error instanceof Error ? error : new Error(String(error)),

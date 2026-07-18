@@ -14,4 +14,5 @@ export type AgentEvent =
     }
   | { type: 'context_compaction_failed'; error: Error }
   | { type: 'completed'; text: string; usage?: ModelUsage; stopReason?: string }
+  | { type: 'cancelled'; text?: string }
   | { type: 'failed'; error: Error }
