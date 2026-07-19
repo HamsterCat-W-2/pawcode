@@ -7,16 +7,18 @@
 - 项目：Node.js、TypeScript、pnpm 编写的终端 AI 编程 Agent。
 - 版本：v0.4.1。
 - 路径：`/Users/guoxuanloveweiyan/Documents/guoxuan/programe/pawcode`。
-- 分支：`codex/session-persistence-resume`。
-- 当前分支跟踪 `origin/codex/session-persistence-resume`；ahead/behind 和工作区状态继续以实际 `git status` 为准。
-- 当前分支包含 v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner，以及 v0.4.1 错误恢复加固。
-- v0.4.1 错误恢复已由提交 `19b0e6d` 完成；该提交之后的文档更新是否已提交，仍以实际 `git status` 为准。
-- 当前分支新增公共可取消列表选择器以及 `/resume`、`pawcode --resume` 的 CLI 回归测试。
+- 分支：`main`。
+- 当前分支跟踪 `origin/main`；更新本文档时，本地 `main` 与 `origin/main` 均指向 `b9c3848`，后续仍以实际 `git status` 和 `git log` 为准。
+- v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner，以及 v0.4.1 错误恢复加固均已合并到 `main`。
+- v0.4.1 错误恢复由提交 `19b0e6d` 完成，延续上下文文档由 `986fa20` 更新。
+- 公共可取消列表选择器以及 `/resume`、`pawcode --resume` 的 CLI 回归测试由提交 `b9c3848` 完成并已合并。
 - `.env` 已忽略，绝不能提交密钥。
 
 关键历史：
 
 ```text
+b9c3848 feat: add cancelable session selector
+986fa20 docs: refresh v0.4.1 continuation context
 19b0e6d feat: harden error recovery
 102bf56 feat: improve session resume interaction
 83ee87b feat: add interactive terminal banner
@@ -351,9 +353,9 @@ pnpm build
 
 `tsx` 在受限沙箱中可能因无法创建 IPC 管道而报 `EPERM`，构建后的 `node dist/cli.js` 可正常运行。
 
-当前 v0.4.1 工作区验证基线：
+当前 `main` 的 v0.4.1 验证基线：
 
-- 错误恢复基线提交为 `19b0e6d feat: harden error recovery`；公共选择器作为后续独立提交交付，具体提交号以 `git log` 为准。
+- 错误恢复基线提交为 `19b0e6d feat: harden error recovery`，公共选择器提交为 `b9c3848 feat: add cancelable session selector`，两者均已合并到 `main`。
 - Prettier、TypeScript 和构建通过。
 - 19 个测试文件、67 个测试通过，包含公共选择器提前取消、回调异常与清理优先级、泛型边界、无效序号重试、Esc/Ctrl+C 取消，以及两个 CLI 入口的子进程回归测试。
 - `node dist/cli.js --version` 输出 `0.4.1`。
@@ -366,12 +368,47 @@ pnpm build
 
 ## 下一步
 
-1. 用真实模型或可控代理返回 429/503，确认零输出重试和产生 delta 后不重试。
-2. 运行中按 Esc，确认部分回答保存、状态为 `cancelled`，恢复后可见。
-3. 模拟遗留 `running` 会话，确认下次启动改为 `interrupted` 且不改变最近会话排序。
-4. 人工验证权限确认期间 Esc 和命令取消/超时警告；`pawcode --help | head` 断管已通过。
-5. 人工验收通过后，推送 `codex/session-persistence-resume`，将 v0.4.1 合并到目标分支并准备发布说明。
-6. v0.5：MCP Client、Hooks、自定义命令和子 Agent。
+v0.4.1 及公共可取消选择器已经合并到 `main`。后续按下面的顺序开发，避免 MCP、Hooks、Skills 和子 Agent 分别建立互不兼容的配置、事件与上下文机制。
+
+### v0.5.0：项目上下文与分层配置
+
+1. 自动加载项目指令文件，优先设计 PawCode 自有文件，同时评估兼容 `AGENTS.md`。
+2. 建立用户级、项目级和本地级配置的加载顺序、覆盖规则与 schema 校验。
+3. 支持按路径生效的规则，避免整个项目的说明全部进入每一次模型请求。
+4. 提供可检查当前已加载上下文和来源的命令；自动记忆应在格式、边界和清理策略明确后再加入。
+
+### v0.5.1：MCP Client
+
+1. 第一阶段支持 stdio 和 Streamable HTTP，并统一映射到现有 `Tool` 接口。
+2. 支持用户级和项目级 MCP 配置、工具发现、连接超时、调用超时及输出截断。
+3. MCP 副作用工具必须继续经过 `ToolRegistry` 和 `PermissionManager`，不能因来自外部服务器而绕过授权。
+4. 基础调用稳定后，再增加 OAuth、resources、prompts 和更细的服务器信任策略。
+
+### v0.5.2：公共 Hooks 事件总线
+
+1. 先定义稳定事件和输入输出协议，再实现命令型 Hook。
+2. 首批覆盖 `SessionStart`、`SessionStop`、`PreToolUse`、`PostToolUse`、`PreCompact` 和 `PostCompact`。
+3. Hook 失败、超时、取消及是否允许阻断操作必须有明确语义；人类输出与 NDJSON 继续共用结构化事件。
+
+### v0.5.3：Skills 与自定义命令
+
+1. 使用 Markdown 和 frontmatter 描述命令、用途、允许工具及上下文策略。
+2. 支持项目级和用户级发现，并采用按需加载，避免把所有 Skill 内容常驻上下文。
+3. Skill 调用仍受现有权限和工作区边界约束；脚本和辅助文件需要可追踪的来源信息。
+
+### v0.6：子 Agent 与 worktree 隔离
+
+1. 子 Agent 使用独立上下文，并可限制模型、工具集合、最大轮数、Token 和并发数量。
+2. 先实现前台委派、取消和结果汇总，再增加后台任务。
+3. 对会修改代码的并行 Agent 增加 Git worktree 隔离和清理策略，防止多个 Agent 互相覆盖工作区。
+
+### v0.7：Checkpoint、Rewind 与更强沙箱
+
+1. 文件修改前建立可恢复 checkpoint，区分恢复代码、恢复会话和同时恢复两者。
+2. 明确命令产生的外部副作用不能依靠文件 checkpoint 自动撤销。
+3. 在现有应用层权限之外评估文件、进程和网络的操作系统级沙箱。
+
+IDE 插件、插件市场、CI 集成和远程会话属于更后期的平台化工作，应在上述 Runtime 扩展协议稳定后推进。
 
 ## 新对话起始提示
 
@@ -380,5 +417,5 @@ pnpm build
 docs/v0.4-design.md、docs/v0.3-design.md 和 docs/streaming-output.md，然后检查 git status --short --branch。保持 PawCode
 Domain 与 PiAiModelAdapter 的边界；所有副作用必须经过 ToolRegistry 和
 PermissionManager。新增或修改代码必须添加便于 review 的中文注释；修改后运行格式、
-类型、测试和构建验证。
+类型、测试和构建验证。当前稳定基线在 main，下一阶段从 v0.5.0 项目上下文与分层配置开始。
 ```
