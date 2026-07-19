@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { InteractiveSignalState, isReadlineKeyboardInterrupt } from '../src/runtime/interactive-signal-state.js'
+import { isReadlineKeyboardInterrupt } from '../src/input/readline-errors.js'
+import { InteractiveSignalState } from '../src/runtime/interactive-signal-state.js'
 
 describe('interactive signal state', () => {
   it('等待输入时 Ctrl+C 请求退出会话', () => {
@@ -21,6 +22,15 @@ describe('interactive signal state', () => {
 
     state.endRun()
     expect(state.requestKeyboardExit()).toBe(true)
+  })
+
+  it('选择器等待期间 Ctrl+C 退出并释放 question', () => {
+    const state = new InteractiveSignalState()
+    const selection = state.beginSelection()
+
+    expect(state.requestKeyboardExit()).toBe(true)
+    expect(selection.signal.aborted).toBe(true)
+    expect(state.shouldExit()).toBe(true)
   })
 
   it('重复 SIGINT 不会重复输出退出提示', () => {

@@ -6,6 +6,7 @@
  */
 export class InteractiveSignalState {
   private runController: AbortController | undefined
+  private selectionController: AbortController | undefined
   private exitRequested = false
 
   beginRun(): AbortController {
@@ -24,18 +25,25 @@ export class InteractiveSignalState {
     return true
   }
 
+  beginSelection(): AbortController {
+    const controller = new AbortController()
+    this.selectionController = controller
+    return controller
+  }
+
+  endSelection(): void {
+    this.selectionController = undefined
+  }
+
   requestKeyboardExit(): boolean {
     if (this.runController || this.exitRequested) return false
     this.exitRequested = true
+    // Ctrl+C 仍然退出整个交互进程，同时释放可能正在等待序号的会话选择器。
+    this.selectionController?.abort()
     return true
   }
 
   shouldExit(): boolean {
     return this.exitRequested
   }
-}
-
-/** Node readline/promises 在 question 等待期间收到 Ctrl+C 时会直接 reject，而不一定触发 process SIGINT。 */
-export function isReadlineKeyboardInterrupt(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('Ctrl+C')
 }

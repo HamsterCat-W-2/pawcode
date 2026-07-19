@@ -9,6 +9,8 @@ import { Command } from 'commander'
 import { loadConfig, type PawCodeConfig } from './config/config.js'
 import type { Message } from './domain/message.js'
 import type { ModelUsage } from './domain/model.js'
+import { selectFromList, type SelectionResult } from './input/cancelable-selector.js'
+import { isReadlineKeyboardInterrupt } from './input/readline-errors.js'
 import { PiAiModelAdapter } from './models/pi-ai-model-adapter.js'
 import { RetryingModelAdapter } from './models/retrying-model-adapter.js'
 import { renderBanner } from './output/banner-renderer.js'
@@ -20,7 +22,7 @@ import { PermissionManager } from './permissions/permission-manager.js'
 import type { AgentEvent } from './runtime/agent-event.js'
 import { AgentRuntime, createInitialMessages } from './runtime/agent-runtime.js'
 import { ContextCompactor } from './runtime/context-compactor.js'
-import { InteractiveSignalState, isReadlineKeyboardInterrupt } from './runtime/interactive-signal-state.js'
+import { InteractiveSignalState } from './runtime/interactive-signal-state.js'
 import { SessionManager } from './sessions/session-manager.js'
 import type { SessionSummary } from './sessions/session-schema.js'
 import { SessionStore } from './sessions/session-store.js'
@@ -63,6 +65,8 @@ interface RuntimeBundle {
   model: string
 }
 
+type SessionResolution = { status: 'ready'; session: SessionManager | undefined } | { status: 'cancelled' }
+
 const program = new Command()
   .name('paw')
   .description('PawCode：终端中的 AI 编程伙伴')
@@ -100,7 +104,10 @@ async function main(): Promise<void> {
   }
   if (options.json && promptParts.length === 0) throw new Error('--json 需要 prompt，或与 --list-sessions 一起使用')
 
-  let session = await resolveSession(store)
+  const resolution = await resolveSession(store)
+  // 启动参数 `--resume` 没有更上层的交互输入，Esc 取消后应直接正常返回 shell。
+  if (resolution.status === 'cancelled') return
+  let session = resolution.session
   if (options.forkSession) {
     if (!session) throw new Error('没有可用于分支的会话')
     // fork 只复制历史；PermissionManager 是新建的内存对象，不会沿用旧会话授权。
@@ -178,20 +185,23 @@ async function main(): Promise<void> {
   await runInteractive(bundle, store, config, maxTurns, permissionManager, readline, resumed !== undefined)
 }
 
-async function resolveSession(store: SessionStore): Promise<SessionManager | undefined> {
+async function resolveSession(store: SessionStore): Promise<SessionResolution> {
   // --continue 固定取最近会话；--resume 则支持稳定 ID/名称或人工选择，两者语义保持区分。
   if (options.continue) {
     const latest = await store.latest()
     if (!latest) throw new Error('当前项目没有可继续的会话')
-    return SessionManager.resume(store, latest.id)
+    return { status: 'ready', session: await SessionManager.resume(store, latest.id) }
   }
-  if (typeof options.resume === 'string') return SessionManager.resolve(store, options.resume)
+  if (typeof options.resume === 'string') {
+    return { status: 'ready', session: await SessionManager.resolve(store, options.resume) }
+  }
   if (options.resume) {
     if (options.json) throw new Error('JSON 模式下 --resume 必须提供会话 ID 或名称')
-    const selected = await pickSession(store)
-    return SessionManager.resume(store, selected.id)
+    const selection = await pickSession(store)
+    if (selection.status === 'cancelled') return selection
+    return { status: 'ready', session: await SessionManager.resume(store, selection.value.id) }
   }
-  return undefined
+  return { status: 'ready', session: undefined }
 }
 
 async function createSession(
@@ -281,6 +291,7 @@ async function runInteractive(
   showRestoredHistory: boolean,
 ): Promise<void> {
   let bundle = initialBundle
+  let selectorActive = false
   const signalState = new InteractiveSignalState()
   const handleKeyboardExit = () => {
     if (!signalState.requestKeyboardExit()) return
@@ -290,6 +301,8 @@ async function runInteractive(
   const handleKeypress = (_value: string, key: { name?: string }) => {
     // Node 会把单独 Esc 标记为 name=escape 且 meta=true；按 name 判断才能兼容真实终端。
     if (key.name !== 'escape') return
+    // 列表选择期间由公共选择器独占 Esc，避免普通输入处理抢先清空选择器提示。
+    if (selectorActive) return
     if (signalState.interruptRun()) return
     clearCurrentInput(readline)
   }
@@ -351,11 +364,34 @@ async function runInteractive(
       }
       if (input === '/resume' || input.startsWith('/resume ')) {
         try {
-          permissionManager.clearSessionRules()
           const identifier = input.slice('/resume'.length).trim()
-          const session = identifier
-            ? await SessionManager.resolve(store, identifier)
-            : await SessionManager.resume(store, (await pickSession(store, readline)).id)
+          let session: SessionManager
+          if (identifier) {
+            session = await SessionManager.resolve(store, identifier)
+          } else {
+            const selectionController = signalState.beginSelection()
+            let selection: SelectionResult<SessionSummary>
+            try {
+              selection = await pickSession(store, {
+                readline,
+                signal: selectionController.signal,
+                onActiveChange: (active) => {
+                  selectorActive = active
+                },
+              })
+            } finally {
+              signalState.endSelection()
+            }
+            // Esc 只取消本次选择，不应切换会话、清空授权或结束整个交互进程。
+            if (selection.status === 'cancelled') {
+              if (signalState.shouldExit()) return
+              console.log('\n已取消恢复会话。\n')
+              continue
+            }
+            session = await SessionManager.resume(store, selection.value.id)
+          }
+          // 只有实际切换成功后才清空旧会话的内存授权；取消选择必须保持原会话不变。
+          permissionManager.clearSessionRules()
           const record = session.snapshot()
           bundle = createRuntimeBundle(session, record.provider, record.model, maxTurns, config, permissionManager)
           console.log(`已恢复会话 ${record.id}：${record.title}\n`)
@@ -538,29 +574,32 @@ function renderSessions(sessions: SessionSummary[], json: boolean): void {
   }
 }
 
+interface PickSessionOptions {
+  readline?: ReturnType<typeof createInterface>
+  signal?: AbortSignal
+  onActiveChange?: (active: boolean) => void
+}
+
 async function pickSession(
   store: SessionStore,
-  existingReadline?: ReturnType<typeof createInterface>,
-): Promise<SessionSummary> {
+  options: PickSessionOptions = {},
+): Promise<SelectionResult<SessionSummary>> {
   // 选择器使用更新时间倒序的快照，序号只在本次提示期间有效；脚本应使用稳定 ID 或 name。
   const sessions = await store.list()
   if (sessions.length === 0) throw new Error('当前项目没有可恢复的会话')
-  console.log('\n选择会话：')
-  sessions.forEach((session, index) => {
-    const label = session.name ? `${session.name} — ${session.title}` : session.title
-    console.log(`${index + 1}. ${label}  (${session.id})`)
+  return selectFromList({
+    items: sessions,
+    heading: '\n选择会话：',
+    prompt: '输入序号（Esc 取消）：',
+    renderItem: (session) => {
+      const label = session.name ? `${session.name} — ${session.title}` : session.title
+      return `${label}  (${session.id})`
+    },
+    invalidMessage: (answer) => `无效的会话序号：${answer}，请重新输入。`,
+    ...(options.readline ? { readline: options.readline } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.onActiveChange ? { onActiveChange: options.onActiveChange } : {}),
   })
-
-  const readline = existingReadline ?? createInterface({ input: stdin, output: stdout })
-  try {
-    const answer = (await readline.question('输入序号：')).trim()
-    const index = Number(answer) - 1
-    const selected = Number.isInteger(index) ? sessions[index] : undefined
-    if (!selected) throw new Error(`无效的会话序号：${answer}`)
-    return selected
-  } finally {
-    if (!existingReadline) readline.close()
-  }
 }
 
 function printInteractiveHeader(bundle: RuntimeBundle): void {

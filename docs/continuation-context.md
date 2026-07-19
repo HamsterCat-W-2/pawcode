@@ -11,6 +11,7 @@
 - 当前分支跟踪 `origin/codex/session-persistence-resume`；ahead/behind 和工作区状态继续以实际 `git status` 为准。
 - 当前分支包含 v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner，以及 v0.4.1 错误恢复加固。
 - v0.4.1 错误恢复已由提交 `19b0e6d` 完成；该提交之后的文档更新是否已提交，仍以实际 `git status` 为准。
+- 当前分支新增公共可取消列表选择器以及 `/resume`、`pawcode --resume` 的 CLI 回归测试。
 - `.env` 已忽略，绝不能提交密钥。
 
 关键历史：
@@ -48,7 +49,7 @@ c66abe8 refactor: split domain types by concept
 - Session schema v1、Zod 磁盘校验、`0600` 权限和临时文件原子替换。
 - Claude Code 风格会话入口：`--continue/-c`、`--resume/-r [id|name]`、`--fork-session`、`--name/-n` 和 `--list-sessions`。
 - 交互会话命令：`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。
-- 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，输入态 `Esc` 清空输入。
+- 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，普通输入态 `Esc` 清空输入。公共可取消选择器让 `/resume` 中的 `Esc` 返回原会话输入提示，也让启动参数 `pawcode --resume` 中的 `Esc` 正常返回 shell。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
 - `--json` 严格 NDJSON；stdout 不混入人类装饰输出，非交互副作用默认拒绝。
 - 人类可读输出默认隐藏成功工具明细；`--verbose` 才显示参数和结果长度，工具失败始终显示。
@@ -117,6 +118,9 @@ src/
 ├── cli.ts                         CLI、流式渲染、交互授权、Banner 和 usage 展示
 ├── config/config.ts               环境变量读取与校验
 ├── filesystem/atomic-file.ts      fsync、原子替换与死亡进程临时文件清理
+├── input/
+│   ├── cancelable-selector.ts     可复用列表渲染、序号重试、Esc 取消与监听器清理
+│   └── readline-errors.ts         集中识别 readline Ctrl+C rejection
 ├── domain/
 │   ├── message.ts                 PawCode 消息协议
 │   ├── model.ts                   请求、响应、usage 和 cost
@@ -347,16 +351,17 @@ pnpm build
 
 `tsx` 在受限沙箱中可能因无法创建 IPC 管道而报 `EPERM`，构建后的 `node dist/cli.js` 可正常运行。
 
-当前 v0.4.1 验证基线：
+当前 v0.4.1 工作区验证基线：
 
-- 对应功能提交：`19b0e6d feat: harden error recovery`。
+- 错误恢复基线提交为 `19b0e6d feat: harden error recovery`；公共选择器作为后续独立提交交付，具体提交号以 `git log` 为准。
 - Prettier、TypeScript 和构建通过。
-- 17 个测试文件、56 个测试通过。
+- 19 个测试文件、67 个测试通过，包含公共选择器提前取消、回调异常与清理优先级、泛型边界、无效序号重试、Esc/Ctrl+C 取消，以及两个 CLI 入口的子进程回归测试。
 - `node dist/cli.js --version` 输出 `0.4.1`。
 - 构建后 `--list-sessions --json` 输出可解析的空 sessions 事件。
 - JSON 启动错误和缺少 prompt 错误均只输出合法 JSON 行。
 - 默认隐藏成功工具明细，`--verbose` 恢复展示，失败结果始终可见。
 - 宽屏、窄屏、无颜色和非 TTY Banner 专项测试通过，并已检查纯文本边框对齐。
+- 真实 PTY 已验证 `/resume` 无效序号继续等待、Esc 返回原输入提示，以及 `pawcode --resume` Esc 以状态 0 返回 shell。
 - `git diff --check` 通过。
 
 ## 下一步
@@ -364,7 +369,7 @@ pnpm build
 1. 用真实模型或可控代理返回 429/503，确认零输出重试和产生 delta 后不重试。
 2. 运行中按 Esc，确认部分回答保存、状态为 `cancelled`，恢复后可见。
 3. 模拟遗留 `running` 会话，确认下次启动改为 `interrupted` 且不改变最近会话排序。
-4. 人工验证权限确认期间 Esc、命令取消/超时警告和 `pawcode --help | head` 断管行为。
+4. 人工验证权限确认期间 Esc 和命令取消/超时警告；`pawcode --help | head` 断管已通过。
 5. 人工验收通过后，推送 `codex/session-persistence-resume`，将 v0.4.1 合并到目标分支并准备发布说明。
 6. v0.5：MCP Client、Hooks、自定义命令和子 Agent。
 
