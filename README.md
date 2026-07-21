@@ -20,7 +20,7 @@ PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 
 - 工作区路径隔离和符号链接检查。
 - 写入和命令的 allow、ask、deny 权限决策。
 - 最大 Agent 轮数和工具输出限制。
-- `/clear`、`/status`、`/exit` 命令。
+- `/init`、`/clear`、`/status`、`/exit` 命令。
 - 项目内 `.pawcode/sessions` 会话保存、列表与恢复。
 - 长上下文按完整用户轮次压缩，不拆分工具调用与结果。
 - 严格 NDJSON 输出模式。
@@ -99,7 +99,7 @@ pnpm dev "查看当前项目并解释目录结构"
 
 交互模式会根据终端宽度显示 `PAWCODE` 启动 Banner；窄终端自动使用紧凑标题。Banner 只写入 TTY，设置 `NO_COLOR` 可关闭颜色，不会影响单次 prompt、管道或 JSON 输出。
 
-交互模式会在写文件或运行命令前询问。单次非交互模式默认拒绝副作用操作，可显式授权：
+交互模式支持 `/init` 自动分析项目并生成根目录 `PAWCODE.md`；已有文件不会被覆盖，生成文件写入前仍会经过权限确认。交互模式会在写文件或运行命令前询问。单次非交互模式默认拒绝副作用操作，可显式授权：
 
 ```bash
 pnpm dev --allow-write --allow-command "pnpm test" "修复问题并运行测试"
@@ -129,7 +129,7 @@ pnpm dev --resume auth-refactor --fork-session
 pnpm dev --list-sessions
 ```
 
-`--continue/-c` 恢复最近会话；`--resume/-r` 无参数打开编号选择器，有参数时按 ID 或 `/rename` 设置的名称恢复；`--fork-session` 复制历史并生成新会话 ID。交互模式还提供 `/new`、`/sessions`、`/resume [id|name]`、`/rename [name]` 和 `/branch [name]`。不同工作区的会话不能互相恢复；切换 Git 分支时会显示警告。
+`--continue/-c` 恢复最近会话；`--resume/-r` 无参数打开编号选择器，有参数时按 ID 或 `/rename` 设置的名称恢复；`--fork-session` 复制历史并生成新会话 ID。交互模式还提供 `/init`、`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]` 和 `/branch [name]`。不同工作区的会话不能互相恢复；切换 Git 分支时会显示警告。
 
 交互恢复会话时会回放用户、助手和压缩摘要，不展示内部 system prompt、工具结果或供应商私有数据。在输入提示处执行 `/exit` 或按 `Ctrl+C` 后，都会显示可复制的 `pawcode --resume <name-or-id>` 和 `pawcode --continue` 命令；模型生成期间按 `Esc` 或 `Ctrl+C` 只取消当前请求，普通输入态按 `Esc` 清空当前输入。`/resume` 会话选择器中按 `Esc` 会取消选择并返回输入提示；启动时执行 `pawcode --resume` 打开选择器后按 `Esc`，则正常返回 shell。PawCode 暂不实现 Claude Code 的双击 `Esc` rewind。
 

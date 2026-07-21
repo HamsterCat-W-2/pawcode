@@ -16,6 +16,7 @@ import type { ModelUsage } from './domain/model.js'
 import { selectFromList, type SelectionResult } from './input/cancelable-selector.js'
 import { isReadlineKeyboardInterrupt } from './input/readline-errors.js'
 import { PiAiModelAdapter } from './models/pi-ai-model-adapter.js'
+import type { ModelAdapter } from './models/model-adapter.js'
 import { RetryingModelAdapter } from './models/retrying-model-adapter.js'
 import { renderBanner } from './output/banner-renderer.js'
 import { isBrokenPipeError } from './output/output-errors.js'
@@ -38,6 +39,7 @@ import { ReadFileTool } from './tools/read-file-tool.js'
 import { RunCommandTool } from './tools/run-command-tool.js'
 import { ToolRegistry } from './tools/tool-registry.js'
 import { WriteFileTool } from './tools/write-file-tool.js'
+import { ProjectInitializer } from './project/project-initializer.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -66,6 +68,7 @@ interface CliOptions {
 
 interface RuntimeBundle {
   runtime: AgentRuntime
+  modelAdapter: ModelAdapter
   session: SessionManager
   provider: string
   model: string
@@ -312,7 +315,7 @@ async function createRuntimeBundle(
     onMessagesChanged: (messages) => session.updateMessages(messages),
     onContextCompacted: () => session.markCompacted(),
   })
-  return { runtime, session, provider, model: modelName }
+  return { runtime, modelAdapter: model, session, provider, model: modelName }
 }
 
 function createPermissionManager(
@@ -394,6 +397,10 @@ async function runInteractive(
         console.log(
           `会话：${record.id}\n标题：${record.title}\n状态：${record.lastRunStatus}\n模型：${bundle.provider}/${bundle.model}\n消息数：${bundle.runtime.messageCount()}\n压缩次数：${record.compactionCount}\n`,
         )
+        continue
+      }
+      if (input === '/init') {
+        await runProjectInit(bundle.modelAdapter, permissionManager, signalState)
         continue
       }
       if (input === '/sessions') {
@@ -512,6 +519,39 @@ async function runInteractive(
     process.removeListener('SIGINT', handleKeyboardExit)
     stdin.removeListener('keypress', handleKeypress)
     readline.close()
+  }
+}
+
+async function runProjectInit(
+  model: ModelAdapter,
+  permissionManager: PermissionManager,
+  signalState: InteractiveSignalState,
+): Promise<void> {
+  let controller: AbortController | undefined
+  try {
+    const initializer = new ProjectInitializer({
+      workspace: process.cwd(),
+      model,
+      permissionManager,
+    })
+    const snapshot = await initializer.inspect()
+    if (snapshot.targetExists) {
+      console.log('\n项目根目录已存在 PAWCODE.md，本次未覆盖。\n')
+      return
+    }
+
+    console.log('\n正在分析项目并生成 PAWCODE.md...')
+    controller = signalState.beginRun()
+    const content = await initializer.generate(snapshot)
+    const preview = content.length > 1_500 ? `${content.slice(0, 1_500)}\n...` : content
+    console.log(`\n生成预览：\n${preview}`)
+    const result = await initializer.write(content, controller.signal)
+    console.log(`\n${result}\n`)
+  } catch (error) {
+    if (signalState.shouldExit()) return
+    console.error(`\n/init 失败：${error instanceof Error ? error.message : String(error)}\n`)
+  } finally {
+    if (controller) signalState.endRun()
   }
 }
 
