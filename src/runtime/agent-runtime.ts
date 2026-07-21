@@ -5,6 +5,7 @@ import type { ToolContext } from '../tools/tool.js'
 import { ToolRegistry } from '../tools/tool-registry.js'
 import type { AgentEvent } from './agent-event.js'
 import type { ContextCompactor } from './context-compactor.js'
+import type { RuntimeContextProvider } from '../context/runtime-context-provider.js'
 
 export const systemPrompt = `你是 PawCode，一个运行在终端中的 AI 编程 Agent。
 需要了解项目时，必须使用工具读取真实文件，不要猜测。
@@ -22,6 +23,7 @@ export interface AgentRuntimeOptions {
   initialMessages?: Message[]
   // 项目上下文只在发给模型时覆盖 system prompt，不进入会话历史，避免私有规则被持久化或压缩。
   systemPrompt?: string
+  contextProvider?: RuntimeContextProvider
   compactor?: ContextCompactor
   onMessagesChanged?: (messages: Message[]) => Promise<void>
   onContextCompacted?: () => Promise<void>
@@ -91,7 +93,7 @@ export class AgentRuntime {
         for await (const event of this.options.model.stream({
           // 传递快照，避免适配器持有内部数组后被后续消息追加所影响。
           messages: this.modelMessages(),
-          tools: this.options.tools.definitions(),
+          tools: this.options.tools.definitions(this.options.contextProvider?.current().disabledTools),
           ...(signal ? { signal } : {}),
         })) {
           switch (event.type) {
@@ -145,10 +147,41 @@ export class AgentRuntime {
             argumentsJson: call.function.arguments,
           }
 
-          const result = await this.options.tools.execute(call.function.name, call.function.arguments, {
+          const toolContext = {
             ...this.options.toolContext,
             ...(signal ? { signal } : {}),
-          })
+          }
+          const targets = this.options.tools.contextTargets(call.function.name, call.function.arguments, toolContext)
+          const previousContext = this.options.contextProvider?.current()
+          const decision = await this.options.contextProvider?.beforeToolCall(
+            call.function.name,
+            call.function.arguments,
+            toolContext,
+            targets,
+          )
+          if (decision?.error) {
+            yield {
+              type: 'context_update_failed',
+              targetPaths: decision.targetPaths,
+              error: decision.error,
+              retainedPreviousContext: true,
+            }
+          } else if (decision?.updated) {
+            yield {
+              type: 'context_updated',
+              targetPaths: decision.targetPaths,
+              addedSources: contextSourceDiff(decision.context.sources, previousContext?.sources ?? []),
+              removedSources: contextSourceDiff(previousContext?.sources ?? [], decision.context.sources),
+              disabledTools: decision.context.disabledTools,
+            }
+          }
+
+          const result = await this.options.tools.execute(
+            call.function.name,
+            call.function.arguments,
+            toolContext,
+            decision?.context.disabledTools,
+          )
 
           this.messages.push({
             role: 'tool',
@@ -187,12 +220,14 @@ export class AgentRuntime {
 
   private modelMessages(): Message[] {
     const messages = this.messagesSnapshot()
-    if (!this.options.systemPrompt) return messages
+    const dynamicSystemPrompt = this.options.contextProvider?.current().systemPrompt
+    const prompt = dynamicSystemPrompt ?? this.options.systemPrompt
+    if (!prompt) return messages
     const systemIndex = messages.findIndex((message) => message.role === 'system')
-    if (systemIndex < 0) return [{ role: 'system', content: this.options.systemPrompt }, ...messages]
+    if (systemIndex < 0) return [{ role: 'system', content: prompt }, ...messages]
     const current = messages[systemIndex]
     if (!current) return messages
-    messages[systemIndex] = { ...current, content: this.options.systemPrompt }
+    messages[systemIndex] = { ...current, content: prompt }
     return messages
   }
 
@@ -201,6 +236,11 @@ export class AgentRuntime {
       await this.options.onMessagesChanged(this.messagesSnapshot())
     }
   }
+}
+
+function contextSourceDiff(next: Array<{ path: string }>, previous: Array<{ path: string }>): string[] {
+  const previousPaths = new Set(previous.map((source) => source.path))
+  return next.map((source) => source.path).filter((sourcePath) => !previousPaths.has(sourcePath))
 }
 
 export function createInitialMessages(): Message[] {

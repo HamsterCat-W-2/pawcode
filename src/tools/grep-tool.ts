@@ -27,6 +27,11 @@ export class GrepTool implements Tool {
     },
   }
 
+  contextTargets(argumentsJson: string) {
+    const args = argumentsSchema.parse(JSON.parse(argumentsJson || '{}'))
+    return [{ path: args.path, kind: 'directory' as const }]
+  }
+
   async execute(argumentsJson: string, context: ToolContext): Promise<string> {
     const args = argumentsSchema.parse(JSON.parse(argumentsJson || '{}'))
     const files = await WorkspaceFiles.create(context.workspace)

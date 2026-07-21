@@ -36,6 +36,11 @@ export class RunCommandTool implements Tool {
     },
   }
 
+  contextTargets(argumentsJson: string) {
+    const args = argumentsSchema.parse(JSON.parse(argumentsJson || '{}'))
+    return [{ path: args.cwd, kind: 'cwd' as const }]
+  }
+
   permissionRequest(argumentsJson: string): PermissionRequest {
     const args = argumentsSchema.parse(JSON.parse(argumentsJson || '{}'))
     const resource = formatCommand(args.command, args.args)

@@ -10,6 +10,7 @@ import { loadConfig, type PawCodeConfig } from './config/config.js'
 import { loadConfigFiles, type LoadedConfigFile } from './config/config-loader.js'
 import { resolveContext } from './context/context-resolver.js'
 import type { ResolvedContext } from './context/context-types.js'
+import { DynamicContextProvider } from './context/runtime-context-provider.js'
 import type { Message } from './domain/message.js'
 import type { ModelUsage } from './domain/model.js'
 import { selectFromList, type SelectionResult } from './input/cancelable-selector.js'
@@ -176,7 +177,7 @@ async function main(): Promise<void> {
     session ??= await createSession(store, provider, model, options.name)
     const permissionManager = createPermissionManager(options)
     const context = await resolveContext(process.cwd(), config, systemPrompt)
-    const bundle = createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager, context)
+    const bundle = await createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager, context)
     const sessionRecord = session.snapshot()
     if (options.json) {
       // JSON 模式的 stdout 只能写协议事件，所有警告和诊断仍走 stderr。
@@ -218,7 +219,7 @@ async function main(): Promise<void> {
   })
   session ??= await createSession(store, provider, model, options.name)
   const context = await resolveContext(process.cwd(), config, systemPrompt)
-  const bundle = createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager, context)
+  const bundle = await createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager, context)
   await runInteractive(bundle, store, config, context, maxTurns, permissionManager, readline, resumed !== undefined)
 }
 
@@ -258,7 +259,7 @@ async function createSession(
   return session
 }
 
-function createRuntimeBundle(
+async function createRuntimeBundle(
   session: SessionManager,
   provider: string,
   modelName: string,
@@ -266,7 +267,7 @@ function createRuntimeBundle(
   config: PawCodeConfig,
   permissionManager: PermissionManager,
   context: ResolvedContext,
-): RuntimeBundle {
+): Promise<RuntimeBundle> {
   const providerModel = new PiAiModelAdapter({
     provider,
     model: modelName,
@@ -283,6 +284,7 @@ function createRuntimeBundle(
     keepRecentTokens: config.contextKeepRecentTokens,
   })
   const record = session.snapshot()
+  const contextProvider = await DynamicContextProvider.create(process.cwd(), config, systemPrompt)
   const runtime = new AgentRuntime({
     model,
     tools: new ToolRegistry(
@@ -305,6 +307,7 @@ function createRuntimeBundle(
     maxTurns,
     initialMessages: record.messages,
     systemPrompt: context.systemPrompt,
+    contextProvider,
     compactor,
     onMessagesChanged: (messages) => session.updateMessages(messages),
     onContextCompacted: () => session.markCompacted(),
@@ -401,7 +404,7 @@ async function runInteractive(
         // “本会话允许”属于内存授权，切换会话身份时必须主动清空。
         permissionManager.clearSessionRules()
         const session = await createSession(store, bundle.provider, bundle.model)
-        bundle = createRuntimeBundle(
+        bundle = await createRuntimeBundle(
           session,
           bundle.provider,
           bundle.model,
@@ -444,7 +447,7 @@ async function runInteractive(
           // 只有实际切换成功后才清空旧会话的内存授权；取消选择必须保持原会话不变。
           permissionManager.clearSessionRules()
           const record = session.snapshot()
-          bundle = createRuntimeBundle(
+          bundle = await createRuntimeBundle(
             session,
             record.provider,
             record.model,
@@ -477,7 +480,7 @@ async function runInteractive(
           const name = input.slice('/branch'.length).trim() || undefined
           const session = await SessionManager.fork(store, bundle.session.snapshot(), name)
           const record = session.snapshot()
-          bundle = createRuntimeBundle(
+          bundle = await createRuntimeBundle(
             session,
             record.provider,
             record.model,
@@ -588,6 +591,14 @@ function renderHumanEvent(event: AgentEvent, state: RenderState, verboseTools = 
       return
     case 'tool_finished':
       writeHumanToolLine(formatToolFinished(event.name, event.result, verboseTools))
+      return
+    case 'context_updated':
+      console.log(
+        `\n📚 项目上下文已刷新：${event.targetPaths.join(', ')}${event.disabledTools.length > 0 ? `，禁用工具：${event.disabledTools.join(', ')}` : ''}`,
+      )
+      return
+    case 'context_update_failed':
+      console.error(`\n项目上下文刷新失败，已保留上一份上下文：${event.error.message}`)
       return
     case 'context_compacted':
       console.log(

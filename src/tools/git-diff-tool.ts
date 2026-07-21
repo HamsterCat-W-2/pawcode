@@ -23,6 +23,10 @@ export class GitDiffTool implements Tool {
     },
   }
 
+  contextTargets() {
+    return [{ path: '.', kind: 'cwd' as const }]
+  }
+
   async execute(argumentsJson: string, context: ToolContext): Promise<string> {
     const args = argumentsSchema.parse(JSON.parse(argumentsJson || '{}'))
     const files = await WorkspaceFiles.create(context.workspace)

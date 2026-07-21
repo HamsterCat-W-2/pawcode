@@ -26,6 +26,11 @@ export class WriteFileTool implements Tool {
     },
   }
 
+  contextTargets(argumentsJson: string) {
+    const args = argumentsSchema.parse(JSON.parse(argumentsJson || '{}'))
+    return [{ path: args.path, kind: 'file' as const }]
+  }
+
   permissionRequest(argumentsJson: string): PermissionRequest {
     // 参数在授权阶段先校验，避免向用户展示与真实执行不一致的资源名称。
     const args = argumentsSchema.parse(JSON.parse(argumentsJson || '{}'))

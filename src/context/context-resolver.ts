@@ -8,6 +8,7 @@ import type { ContextSource, ResolvedContext } from './context-types.js'
 interface ResolveContextOptions {
   homeDirectory?: string
   targetPath?: string
+  targetPaths?: string[]
 }
 
 interface LoadedInstruction {
@@ -42,23 +43,16 @@ export async function resolveContext(
     diagnostics,
   )
 
-  const target = await resolveTarget(root, options.targetPath, diagnostics)
-  const targetParent = target && (await isDirectory(target)) ? target : target ? path.dirname(target) : root
-  const directories = ancestors(root, targetParent)
-  for (const directory of directories) {
-    await loadInstruction(
-      path.join(directory, 'PAWCODE.md'),
-      'project',
-      relativePath(root, directory),
-      root,
-      loaded,
-      seen,
-      config,
-      diagnostics,
-    )
-    if (config.instructions.includeAgentsMd) {
+  const requestedTargets = options.targetPaths ?? (options.targetPath ? [options.targetPath] : [undefined])
+  const resolvedTargets: Array<string | undefined> = []
+  for (const targetPath of requestedTargets) {
+    const target = await resolveTarget(root, targetPath, diagnostics)
+    resolvedTargets.push(target)
+    const targetParent = target && (await isDirectory(target)) ? target : target ? path.dirname(target) : root
+    const directories = ancestors(root, targetParent)
+    for (const directory of directories) {
       await loadInstruction(
-        path.join(directory, 'AGENTS.md'),
+        path.join(directory, 'PAWCODE.md'),
         'project',
         relativePath(root, directory),
         root,
@@ -67,6 +61,18 @@ export async function resolveContext(
         config,
         diagnostics,
       )
+      if (config.instructions.includeAgentsMd) {
+        await loadInstruction(
+          path.join(directory, 'AGENTS.md'),
+          'project',
+          relativePath(root, directory),
+          root,
+          loaded,
+          seen,
+          config,
+          diagnostics,
+        )
+      }
     }
   }
 
@@ -87,17 +93,23 @@ export async function resolveContext(
     )
   }
 
-  const relativeTarget = target ? relativePath(root, target) : ''
-  const matchingRules = config.context.pathRules.filter((rule) => globMatches(rule.pattern, relativeTarget))
+  const matchingRules = resolvedTargets.flatMap((target) => {
+    const relativeTarget = target ? relativePath(root, target) : ''
+    return config.context.pathRules
+      .filter((rule) => globMatches(rule.pattern, relativeTarget))
+      .map((rule) => ({ rule, relativeTarget }))
+  })
   const ruleInstructions = matchingRules
-    .map((rule) => rule.instructions)
+    .map(({ rule, relativeTarget }) =>
+      rule.instructions ? `【路径规则：${relativeTarget || '.'}】\n${rule.instructions}` : undefined,
+    )
     .filter((value): value is string => Boolean(value))
-  const disabledTools = [...new Set(matchingRules.flatMap((rule) => rule.disabledTools))]
+  const disabledTools = [...new Set(matchingRules.flatMap(({ rule }) => rule.disabledTools))]
   const sections = [
     baseSystemPrompt,
     ...loaded.map((entry) => `【项目上下文：${entry.source.path}】\n${entry.content}`),
     config.context.appendSystemPrompt,
-    ...ruleInstructions.map((value) => `【路径规则：${relativeTarget || '.'}】\n${value}`),
+    ...ruleInstructions,
   ].filter(Boolean)
 
   return {

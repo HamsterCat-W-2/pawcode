@@ -30,6 +30,11 @@ export class ApplyPatchTool implements Tool {
     },
   }
 
+  contextTargets(argumentsJson: string) {
+    const args = argumentsSchema.parse(JSON.parse(argumentsJson || '{}'))
+    return [{ path: args.path, kind: 'file' as const }]
+  }
+
   permissionRequest(argumentsJson: string): PermissionRequest {
     // 授权粒度是目标文件；具体替换内容仍由 WorkspaceFiles 做确定性校验。
     const args = argumentsSchema.parse(JSON.parse(argumentsJson || '{}'))

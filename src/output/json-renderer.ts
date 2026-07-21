@@ -11,7 +11,7 @@ export interface JsonEvent {
 }
 
 export function toJsonEvent(event: AgentEvent): JsonEvent {
-  if (event.type === 'failed' || event.type === 'context_compaction_failed') {
+  if (event.type === 'failed' || event.type === 'context_compaction_failed' || event.type === 'context_update_failed') {
     // Error 的 message 默认不可枚举，必须显式投影，否则 JSON.stringify 会得到空对象。
     return { version: 1, type: event.type, error: { message: event.error.message } }
   }

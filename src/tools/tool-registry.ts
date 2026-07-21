@@ -1,5 +1,5 @@
 import type { ToolDefinition } from '../domain/tool.js'
-import type { Tool, ToolContext } from './tool.js'
+import type { ContextTarget, Tool, ToolContext } from './tool.js'
 
 export class ToolRegistry {
   private readonly tools: Map<string, Tool>
@@ -18,14 +18,30 @@ export class ToolRegistry {
     }
   }
 
-  definitions(): ToolDefinition[] {
+  definitions(disabledTools: string[] = []): ToolDefinition[] {
+    const disabled = new Set([...this.disabledTools, ...disabledTools])
     return [...this.tools.values()]
-      .filter((tool) => !this.disabledTools.has(tool.definition.function.name))
+      .filter((tool) => !disabled.has(tool.definition.function.name))
       .map((tool) => tool.definition)
   }
 
-  async execute(name: string, argumentsJson: string, context: ToolContext): Promise<string> {
-    if (this.disabledTools.has(name)) {
+  contextTargets(name: string, argumentsJson: string, context: ToolContext): ContextTarget[] {
+    const tool = this.tools.get(name)
+    if (!tool?.contextTargets) return [{ path: '.', kind: 'cwd' }]
+    try {
+      return tool.contextTargets(argumentsJson, context).slice(0, 16)
+    } catch {
+      return [{ path: '.', kind: 'cwd' }]
+    }
+  }
+
+  async execute(
+    name: string,
+    argumentsJson: string,
+    context: ToolContext,
+    disabledTools: string[] = [],
+  ): Promise<string> {
+    if (this.disabledTools.has(name) || disabledTools.includes(name)) {
       return `工具执行失败：工具已被当前路径规则禁用：${name}`
     }
     const tool = this.tools.get(name)

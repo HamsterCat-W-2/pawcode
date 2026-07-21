@@ -7,6 +7,14 @@ export type AgentEvent =
   | { type: 'tool_started'; name: string; argumentsJson: string }
   | { type: 'tool_finished'; name: string; result: string }
   | {
+      type: 'context_updated'
+      targetPaths: string[]
+      addedSources: string[]
+      removedSources: string[]
+      disabledTools: string[]
+    }
+  | { type: 'context_update_failed'; targetPaths: string[]; error: Error; retainedPreviousContext: true }
+  | {
       type: 'context_compacted'
       removedMessages: number
       estimatedTokensBefore: number
