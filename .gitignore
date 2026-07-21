@@ -5,3 +5,4 @@ dist/
 coverage/
 *.log
 .pnpm-store
+graphify-out/
