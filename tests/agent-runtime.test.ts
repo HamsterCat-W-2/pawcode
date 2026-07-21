@@ -94,6 +94,27 @@ describe('AgentRuntime', () => {
     })
   })
 
+  it('只在模型请求中注入项目上下文，不把上下文写入会话消息', async () => {
+    const model = new ScriptedModel([{ content: '完成', toolCalls: [] }])
+    const runtime = new AgentRuntime({
+      model,
+      tools: new ToolRegistry([]),
+      toolContext: { workspace: process.cwd(), maxOutputChars: 10_000 },
+      maxTurns: 1,
+      systemPrompt: '内置规则\n\n项目私有规则',
+    })
+
+    for await (const _event of runtime.run('检查')) {
+      // 只消费事件，断言集中在模型请求和持久化快照。
+    }
+
+    expect(model.requests[0]?.messages[0]).toMatchObject({ role: 'system', content: '内置规则\n\n项目私有规则' })
+    expect(runtime.messagesSnapshot()[0]).toMatchObject({
+      role: 'system',
+      content: expect.not.stringContaining('项目私有规则'),
+    })
+  })
+
   it('达到最大轮数时产生失败事件', async () => {
     const toolCallResponse: ModelResponse = {
       content: null,

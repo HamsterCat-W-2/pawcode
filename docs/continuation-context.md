@@ -118,7 +118,7 @@ ContextCompactor
 ```text
 src/
 ├── cli.ts                         CLI、流式渲染、交互授权、Banner 和 usage 展示
-├── config/config.ts               环境变量读取与校验
+├── config/config.ts               分层配置投影与校验
 ├── filesystem/atomic-file.ts      fsync、原子替换与死亡进程临时文件清理
 ├── input/
 │   ├── cancelable-selector.ts     可复用列表渲染、序号重试、Esc 取消与监听器清理
@@ -295,19 +295,25 @@ Tool.execute()
 
 要求 Node.js `>=22.19.0`、pnpm 11。
 
-```dotenv
-MODEL_PROVIDER=供应商ID
-MODEL_NAME=模型ID
-MODEL_API_KEY=模型服务密钥
-MODEL_MAX_RETRIES=2
-MODEL_RETRY_BASE_DELAY_MS=500
-MAX_AGENT_TURNS=10
-MAX_TOOL_OUTPUT_CHARS=20000
-CONTEXT_COMPACT_THRESHOLD=0.8
-CONTEXT_KEEP_RECENT_TOKENS=20000
+v0.5 不再读取 `.env` 或模型环境变量。全局模型配置位于 `~/.pawcode/config.json`，项目和本地非敏感覆盖分别位于 `.pawcode/config.json` 与 `.pawcode/config.local.json`：
+
+```json
+{
+  "model": {
+    "provider": "openai",
+    "name": "模型ID",
+    "apiKey": "模型服务密钥"
+  },
+  "modelMaxRetries": 2,
+  "modelRetryBaseDelayMs": 500,
+  "maxAgentTurns": 10,
+  "maxToolOutputChars": 20000,
+  "contextCompactThreshold": 0.8,
+  "contextKeepRecentTokens": 20000
+}
 ```
 
-`MODEL_BASE_URL` 仅用于 Ollama、vLLM、代理等自定义 OpenAI-compatible 服务。项目推荐统一使用 `MODEL_API_KEY`，但仍兼容 `pi-ai` 原生供应商环境变量。
+`model.apiKey` 只允许出现在用户级配置中；用户级目录/文件权限要求为 `0700`/`0600`。项目级配置可以声明 `provider`、`name` 或 `baseUrl`，但不能保存凭据。使用 `pawcode --show-config` 和 `pawcode --show-context [path]` 检查来源。
 
 ```bash
 pnpm dev

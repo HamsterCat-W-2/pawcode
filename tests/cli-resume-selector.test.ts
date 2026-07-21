@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -57,6 +57,12 @@ describe('CLI resume selector', () => {
 async function createWorkspaceWithSession(): Promise<string> {
   const workspace = await mkdtemp(path.join(tmpdir(), 'pawcode-cli-selector-'))
   temporaryWorkspaces.push(workspace)
+  await mkdir(path.join(workspace, '.pawcode'), { recursive: true, mode: 0o700 })
+  await writeFile(
+    path.join(workspace, '.pawcode/config.json'),
+    JSON.stringify({ model: { provider: 'custom', name: 'selector-test', baseUrl: 'http://127.0.0.1:1/v1' } }),
+    { mode: 0o600 },
+  )
   const store = await SessionStore.create(workspace)
   const session = await SessionManager.create(store, 'custom', 'selector-test', createInitialMessages())
   await session.rename('selector-current')
@@ -67,13 +73,7 @@ function startCli(workspace: string, args: string[]): CliHarness {
   // 自定义 Provider 只用于完成 CLI 依赖组装；测试不发送 prompt，因此不会产生网络请求。
   const child = spawn(process.execPath, ['--import', tsxImport, cliPath, ...args], {
     cwd: workspace,
-    env: {
-      ...process.env,
-      MODEL_PROVIDER: 'custom',
-      MODEL_NAME: 'selector-test',
-      MODEL_BASE_URL: 'http://127.0.0.1:1/v1',
-      MODEL_API_KEY: 'selector-test-key',
-    },
+    env: { ...process.env },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   return new CliHarness(child)

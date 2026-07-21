@@ -23,7 +23,7 @@ import type { ModelEvent } from './model-event.js'
 export interface PiAiModelAdapterOptions {
   provider: string
   model: string
-  /** 显式密钥优先；省略时 pi-ai 会读取供应商自己的环境变量。 */
+  /** 认证信息由 PawCode 用户级配置显式传入；省略时只允许无密钥 Provider。 */
   apiKey?: string
   /** 提供后注册为自定义 OpenAI-compatible Provider，用于 Ollama、代理等服务。 */
   baseUrl?: string
@@ -44,7 +44,14 @@ export class PiAiModelAdapter implements ModelAdapter {
 
   constructor(private readonly options: PiAiModelAdapterOptions) {
     this.timeoutMs = options.timeoutMs ?? 120_000
-    this.models = options.models ?? (options.baseUrl ? createOpenAICompatibleModels(options) : builtinModels())
+    this.models =
+      options.models ??
+      (options.baseUrl
+        ? createOpenAICompatibleModels(options)
+        : builtinModels({
+            // 禁止 pi-ai 的默认 auth context 回读环境变量或外部凭据文件；认证来源统一由 PawCode 配置层控制。
+            authContext: { env: async () => undefined, fileExists: async () => false },
+          }))
 
     const selectedModel = this.models.getModel(options.provider, options.model)
     if (!selectedModel) {
@@ -114,7 +121,7 @@ export class PiAiModelAdapter implements ModelAdapter {
 
 function createOpenAICompatibleModels(options: PiAiModelAdapterOptions & { baseUrl?: string }): Models {
   const baseUrl = options.baseUrl
-  if (!baseUrl) throw new Error('自定义 Provider 缺少 MODEL_BASE_URL')
+  if (!baseUrl) throw new Error('自定义 Provider 缺少 model.baseUrl')
 
   const model: Model<'openai-completions'> = {
     id: options.model,
@@ -139,14 +146,14 @@ function createOpenAICompatibleModels(options: PiAiModelAdapterOptions & { baseU
     name: options.provider,
     baseUrl,
     auth: {
-      // 本地模型通常不需要密钥；若设置 MODEL_API_KEY，则仍会自动带上。
+      // 凭据只由 PawCode 配置层显式传入；Adapter 不再读取 .env 或供应商环境变量。
       apiKey: {
         name: `${options.provider} API key`,
-        async resolve({ ctx, credential }) {
-          const apiKey = credential?.key ?? (await ctx.env('MODEL_API_KEY'))
+        async resolve({ credential }) {
+          const apiKey = credential?.key
           return {
             auth: apiKey ? { apiKey } : {},
-            ...(apiKey ? { source: 'MODEL_API_KEY' } : { source: 'keyless' }),
+            ...(apiKey ? { source: 'config' } : { source: 'keyless' }),
           }
         },
       },

@@ -43,6 +43,14 @@ describe('ToolRegistry', () => {
     expect(result).toBe('12345\n\n[工具输出已截断]')
   })
 
+  it('路径规则禁用的工具不会出现在定义中，也不能被模型直接调用', async () => {
+    const registry = new ToolRegistry([createTool('read', 'a'), createTool('run_command', 'done')], ['run_command'])
+    expect(registry.definitions().map((definition) => definition.function.name)).toEqual(['read'])
+    await expect(
+      registry.execute('run_command', '{}', { workspace: process.cwd(), maxOutputChars: 100 }),
+    ).resolves.toContain('工具已被当前路径规则禁用')
+  })
+
   it('副作用工具必须先通过统一权限检查', async () => {
     let executed = false
     const permissionRequest: PermissionRequest = {

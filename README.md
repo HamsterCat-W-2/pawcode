@@ -39,61 +39,47 @@ pnpm install
 
 ## 配置
 
+PawCode 使用分层 JSON 配置，不再读取 `.env` 或 `MODEL_*` 环境变量。用户级配置位于 `~/.pawcode/config.json`，适合保存个人默认模型和 API Key：
+
+```json
+{
+  "model": {
+    "provider": "openai",
+    "name": "gpt-4.1-mini",
+    "apiKey": "你的APIKey"
+  },
+  "maxAgentTurns": 10,
+  "maxToolOutputChars": 20000,
+  "contextCompactThreshold": 0.8,
+  "contextKeepRecentTokens": 20000,
+  "modelMaxRetries": 2,
+  "modelRetryBaseDelayMs": 500
+}
+```
+
+配置目录权限为 `0700`，配置文件权限为 `0600`。项目级和本地级配置分别位于 `.pawcode/config.json` 和 `.pawcode/config.local.json`，可以覆盖非敏感设置，但不能保存 API Key。
+
+自定义 OpenAI-compatible 服务示例：
+
+```json
+{
+  "model": {
+    "baseUrl": "http://localhost:11434/v1",
+    "name": "qwen3-coder"
+  }
+}
+```
+
+未设置 `provider` 且存在 `baseUrl` 时自动使用 `custom` Provider。使用 `--provider`、`--model` 或其他 CLI 参数可以临时覆盖配置文件。
+
+查看当前生效配置和上下文来源：
+
 ```bash
-cp .env.example .env
+pawcode --show-config
+pawcode --show-config --json
+pawcode --show-context
+pawcode --show-context src/tools/example.ts
 ```
-
-编辑 `.env`。PawCode 对所有供应商使用相同字段，通过字段值选择 Provider 和模型：
-
-```dotenv
-MODEL_PROVIDER=供应商ID
-MODEL_NAME=模型ID
-MODEL_API_KEY=模型服务密钥
-```
-
-OpenAI：
-
-```dotenv
-MODEL_PROVIDER=openai
-MODEL_NAME=gpt-4.1-mini
-MODEL_API_KEY=你的APIKey
-MAX_AGENT_TURNS=10
-MAX_TOOL_OUTPUT_CHARS=20000
-CONTEXT_COMPACT_THRESHOLD=0.8
-CONTEXT_KEEP_RECENT_TOKENS=20000
-MODEL_MAX_RETRIES=2
-MODEL_RETRY_BASE_DELAY_MS=500
-```
-
-小米 MiMo Token Plan（中国区）：
-
-```dotenv
-MODEL_PROVIDER=xiaomi-token-plan-cn
-MODEL_NAME=mimo-v2.5
-MODEL_API_KEY=你的APIKey
-```
-
-Anthropic：
-
-```dotenv
-MODEL_PROVIDER=anthropic
-MODEL_NAME=claude-sonnet-4-5
-MODEL_API_KEY=你的APIKey
-```
-
-如果使用 Ollama、代理或其他自定义 OpenAI-compatible 地址，可以沿用旧配置：
-
-```dotenv
-MODEL_BASE_URL=http://localhost:11434/v1
-MODEL_API_KEY=可选
-MODEL_NAME=qwen3-coder
-```
-
-存在 `MODEL_BASE_URL` 且未设置 `MODEL_PROVIDER` 时，PawCode 会自动使用名为 `custom` 的 Provider。使用内置 Provider 时不需要填写 `MODEL_BASE_URL`。
-
-`pi-ai` 原生的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`XIAOMI_TOKEN_PLAN_CN_API_KEY` 等变量仍然可以使用，但它们是可选的底层兼容方式；PawCode 推荐统一使用 `MODEL_API_KEY`。
-
-启动脚本通过 `node -r dotenv/config` 在执行业务代码前加载 `.env`。
 
 ## 使用
 
@@ -247,12 +233,13 @@ src/
 
 v0.5：
 
-- MCP Client。
-- Hooks 和自定义命令。
-- 子 Agent。
+- 项目上下文文件与 `AGENTS.md` 兼容读取。
+- 用户级、项目级和本地级 JSON 配置。
+- 配置来源诊断、路径规则和上下文按需注入。
+- MCP Client、Hooks、Skills 和子 Agent 将在 v0.5 后续版本实现。
 
 ## 安全说明
 
 `pi-ai` 只负责模型通信，不负责 PawCode 的工具权限。PawCode 默认拒绝非交互写入和命令操作；交互授权只在当前进程内有效。文件工具会检查工作区边界和符号链接，命令工具不经过 Shell，但这些措施不等同于操作系统沙箱。仍应避免在包含不必要敏感数据的目录中启动，因为模型读取到的工具结果会发送到配置的模型服务。
 
-详细设计见 [v0.3](docs/v0.3-design.md)、[v0.4](docs/v0.4-design.md) 和 [v0.4.1 错误恢复](docs/v0.4.1-error-recovery-design.md) 技术文档。
+详细设计见 [v0.3](docs/v0.3-design.md)、[v0.4](docs/v0.4-design.md)、[v0.4.1 错误恢复](docs/v0.4.1-error-recovery-design.md) 和 [v0.5 项目上下文与分层配置](docs/v0.5-design.md) 技术文档。

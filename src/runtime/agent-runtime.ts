@@ -20,6 +20,8 @@ export interface AgentRuntimeOptions {
   toolContext: ToolContext
   maxTurns: number
   initialMessages?: Message[]
+  // 项目上下文只在发给模型时覆盖 system prompt，不进入会话历史，避免私有规则被持久化或压缩。
+  systemPrompt?: string
   compactor?: ContextCompactor
   onMessagesChanged?: (messages: Message[]) => Promise<void>
   onContextCompacted?: () => Promise<void>
@@ -88,7 +90,7 @@ export class AgentRuntime {
 
         for await (const event of this.options.model.stream({
           // 传递快照，避免适配器持有内部数组后被后续消息追加所影响。
-          messages: [...this.messages],
+          messages: this.modelMessages(),
           tools: this.options.tools.definitions(),
           ...(signal ? { signal } : {}),
         })) {
@@ -181,6 +183,17 @@ export class AgentRuntime {
 
   private initialMessages(): Message[] {
     return createInitialMessages()
+  }
+
+  private modelMessages(): Message[] {
+    const messages = this.messagesSnapshot()
+    if (!this.options.systemPrompt) return messages
+    const systemIndex = messages.findIndex((message) => message.role === 'system')
+    if (systemIndex < 0) return [{ role: 'system', content: this.options.systemPrompt }, ...messages]
+    const current = messages[systemIndex]
+    if (!current) return messages
+    messages[systemIndex] = { ...current, content: this.options.systemPrompt }
+    return messages
   }
 
   private async notifyMessagesChanged(): Promise<void> {

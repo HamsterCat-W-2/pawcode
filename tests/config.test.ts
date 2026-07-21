@@ -1,13 +1,23 @@
-import { describe, expect, it } from 'vitest'
+import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../src/config/config.js'
+import { loadConfigFiles } from '../src/config/config-loader.js'
 
-describe('loadConfig', () => {
-  it('读取 pi-ai 内置 Provider 配置', () => {
+const temporaryDirectories: string[] = []
+
+describe('分层配置', () => {
+  afterEach(async () => {
+    await Promise.all(
+      temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+    )
+  })
+
+  it('读取用户级模型配置和运行参数', () => {
     expect(
       loadConfig({
-        MODEL_PROVIDER: 'xiaomi-token-plan-cn',
-        MODEL_NAME: 'mimo-v2.5',
-        MODEL_API_KEY: 'test-key',
+        model: { provider: 'xiaomi-token-plan-cn', name: 'mimo-v2.5', apiKey: 'test-key' },
       }),
     ).toMatchObject({
       provider: 'xiaomi-token-plan-cn',
@@ -22,11 +32,10 @@ describe('loadConfig', () => {
     })
   })
 
-  it('旧版 base URL 配置自动转换为 custom Provider', () => {
+  it('自定义 base URL 自动转换为 custom Provider', () => {
     expect(
       loadConfig({
-        MODEL_BASE_URL: 'http://localhost:11434/v1/',
-        MODEL_NAME: 'qwen3-coder',
+        model: { baseUrl: 'http://localhost:11434/v1/', name: 'qwen3-coder' },
       }),
     ).toMatchObject({
       provider: 'custom',
@@ -40,6 +49,48 @@ describe('loadConfig', () => {
       provider: 'anthropic',
       model: 'saved-model',
     })
-    expect(() => loadConfig({})).toThrow('MODEL_NAME')
+    expect(() => loadConfig({})).toThrow('model.name')
+  })
+
+  it('按用户、项目、本地顺序合并，且只允许用户级保存 API Key', async () => {
+    const root = await createFixture()
+    const home = path.join(root, 'home')
+    await mkdir(path.join(home, '.pawcode'), { recursive: true, mode: 0o700 })
+    await writeJson(path.join(home, '.pawcode/config.json'), {
+      model: { provider: 'openai', name: 'user-model', apiKey: 'secret' },
+      display: { verboseTools: false },
+    })
+    await writeJson(path.join(root, '.pawcode/config.json'), {
+      model: { name: 'project-model' },
+      display: { verboseTools: true },
+    })
+    await writeJson(path.join(root, '.pawcode/config.local.json'), { modelMaxRetries: 4 })
+
+    const loaded = await loadConfigFiles(root, { homeDirectory: home })
+    expect(loadConfig(loaded.config)).toMatchObject({
+      provider: 'openai',
+      model: 'project-model',
+      apiKey: 'secret',
+      modelMaxRetries: 4,
+      display: { verboseTools: true },
+    })
+  })
+
+  it('拒绝项目级 API Key', async () => {
+    const root = await createFixture()
+    await writeJson(path.join(root, '.pawcode/config.json'), { model: { apiKey: 'must-not-be-here' } })
+    await expect(loadConfigFiles(root, { homeDirectory: path.join(root, 'home') })).rejects.toThrow('model.apiKey')
   })
 })
+
+async function createFixture(): Promise<string> {
+  const root = await mkdtemp(path.join(tmpdir(), 'pawcode-config-'))
+  temporaryDirectories.push(root)
+  await mkdir(path.join(root, '.pawcode'), { recursive: true, mode: 0o700 })
+  return root
+}
+
+async function writeJson(filePath: string, value: unknown): Promise<void> {
+  await writeFile(filePath, JSON.stringify(value), 'utf8')
+  await chmod(filePath, 0o600)
+}

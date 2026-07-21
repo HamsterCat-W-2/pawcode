@@ -7,6 +7,9 @@ import { createInterface } from 'node:readline/promises'
 import { promisify } from 'node:util'
 import { Command } from 'commander'
 import { loadConfig, type PawCodeConfig } from './config/config.js'
+import { loadConfigFiles, type LoadedConfigFile } from './config/config-loader.js'
+import { resolveContext } from './context/context-resolver.js'
+import type { ResolvedContext } from './context/context-types.js'
 import type { Message } from './domain/message.js'
 import type { ModelUsage } from './domain/model.js'
 import { selectFromList, type SelectionResult } from './input/cancelable-selector.js'
@@ -20,7 +23,7 @@ import { renderResumeHint, renderSessionHistory } from './output/session-display
 import { formatToolFinished, formatToolStarted, type HumanToolLine } from './output/tool-event-renderer.js'
 import { PermissionManager } from './permissions/permission-manager.js'
 import type { AgentEvent } from './runtime/agent-event.js'
-import { AgentRuntime, createInitialMessages } from './runtime/agent-runtime.js'
+import { AgentRuntime, createInitialMessages, systemPrompt } from './runtime/agent-runtime.js'
 import { ContextCompactor } from './runtime/context-compactor.js'
 import { InteractiveSignalState } from './runtime/interactive-signal-state.js'
 import { SessionManager } from './sessions/session-manager.js'
@@ -56,6 +59,8 @@ interface CliOptions {
   listSessions?: boolean
   json?: boolean
   verbose?: boolean
+  showConfig?: boolean
+  showContext?: string | boolean
 }
 
 interface RuntimeBundle {
@@ -72,8 +77,8 @@ const program = new Command()
   .description('PawCode：终端中的 AI 编程伙伴')
   .version('0.4.1')
   .argument('[prompt...]', '直接执行一次问题；省略时进入交互模式')
-  .option('--provider <name>', '覆盖 .env 或恢复会话中的模型供应商')
-  .option('--model <name>', '覆盖 .env 或恢复会话中的模型名称')
+  .option('--provider <name>', '覆盖配置文件或恢复会话中的模型供应商')
+  .option('--model <name>', '覆盖配置文件或恢复会话中的模型名称')
   .option('--max-turns <number>', '最大 Agent 轮数', parsePositiveInteger)
   .option('--allow-write', '非交互模式中允许工作区文件写入')
   .option('--allow-command <prefix>', '允许匹配前缀的命令，可重复设置', collectOption, [])
@@ -82,6 +87,8 @@ const program = new Command()
   .option('--fork-session', '恢复时复制历史并创建新的会话 ID')
   .option('-n, --name <name>', '为新会话或恢复的会话设置名称')
   .option('--list-sessions', '列出当前项目的会话后退出')
+  .option('--show-config', '显示分层配置来源后退出')
+  .option('--show-context [path]', '显示当前加载的项目上下文；可指定工作区相对路径后退出')
   .option('--json', '以严格 NDJSON 输出运行事件')
   .option('--verbose', '显示工具调用参数和成功结果明细')
   .parse()
@@ -94,6 +101,28 @@ async function main(): Promise<void> {
   if (options.forkSession && !options.continue && !options.resume) {
     throw new Error('--fork-session 必须与 --continue 或 --resume 一起使用')
   }
+
+  const loadedConfig = await loadConfigFiles(process.cwd())
+  if (options.showConfig) {
+    renderConfig(loadedConfig, options.json ?? false)
+    return
+  }
+  if (options.showContext) {
+    const inspectionConfig = loadConfig(loadedConfig.config, {
+      ...(options.provider ? { provider: options.provider } : {}),
+      model: options.model ?? 'context-inspection',
+    })
+    const context = await resolveContext(
+      process.cwd(),
+      inspectionConfig,
+      // 诊断路径不启动模型，只复用与 Runtime 相同的内置安全 system prompt。
+      systemPrompt,
+      typeof options.showContext === 'string' ? { targetPath: options.showContext } : {},
+    )
+    renderContext(context, loadedConfig.warnings, options.json ?? false)
+    return
+  }
+  for (const warning of loadedConfig.warnings) console.error(`配置警告：${warning}`)
 
   // 会话目录始终从当前工作区创建，不接受 CLI 路径参数，避免跨项目恢复。
   const store = await SessionStore.create(process.cwd())
@@ -118,7 +147,7 @@ async function main(): Promise<void> {
   const resumed = session?.snapshot()
   const defaultProvider = options.provider ?? resumed?.provider
   const defaultModel = options.model ?? resumed?.model
-  const config = loadConfig(process.env, {
+  const config = loadConfig(loadedConfig.config, {
     ...(defaultProvider ? { provider: defaultProvider } : {}),
     ...(defaultModel ? { model: defaultModel } : {}),
   })
@@ -146,7 +175,8 @@ async function main(): Promise<void> {
   if (promptParts.length > 0) {
     session ??= await createSession(store, provider, model, options.name)
     const permissionManager = createPermissionManager(options)
-    const bundle = createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager)
+    const context = await resolveContext(process.cwd(), config, systemPrompt)
+    const bundle = createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager, context)
     const sessionRecord = session.snapshot()
     if (options.json) {
       // JSON 模式的 stdout 只能写协议事件，所有警告和诊断仍走 stderr。
@@ -164,7 +194,13 @@ async function main(): Promise<void> {
     } else {
       console.log(`会话：${sessionRecord.id}`)
     }
-    await renderRun(bundle, promptParts.join(' '), options.json ? renderJsonEvent : renderHumanEvent)
+    await renderRun(
+      bundle,
+      promptParts.join(' '),
+      options.json
+        ? renderJsonEvent
+        : (event, state) => renderHumanEvent(event, state, options.verbose ?? config.display.verboseTools),
+    )
     return
   }
 
@@ -181,8 +217,9 @@ async function main(): Promise<void> {
     return 'deny'
   })
   session ??= await createSession(store, provider, model, options.name)
-  const bundle = createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager)
-  await runInteractive(bundle, store, config, maxTurns, permissionManager, readline, resumed !== undefined)
+  const context = await resolveContext(process.cwd(), config, systemPrompt)
+  const bundle = createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager, context)
+  await runInteractive(bundle, store, config, context, maxTurns, permissionManager, readline, resumed !== undefined)
 }
 
 async function resolveSession(store: SessionStore): Promise<SessionResolution> {
@@ -228,6 +265,7 @@ function createRuntimeBundle(
   maxTurns: number,
   config: PawCodeConfig,
   permissionManager: PermissionManager,
+  context: ResolvedContext,
 ): RuntimeBundle {
   const providerModel = new PiAiModelAdapter({
     provider,
@@ -247,15 +285,18 @@ function createRuntimeBundle(
   const record = session.snapshot()
   const runtime = new AgentRuntime({
     model,
-    tools: new ToolRegistry([
-      new ListFilesTool(),
-      new ReadFileTool(),
-      new GrepTool(),
-      new WriteFileTool(),
-      new ApplyPatchTool(),
-      new RunCommandTool(),
-      new GitDiffTool(),
-    ]),
+    tools: new ToolRegistry(
+      [
+        new ListFilesTool(),
+        new ReadFileTool(),
+        new GrepTool(),
+        new WriteFileTool(),
+        new ApplyPatchTool(),
+        new RunCommandTool(),
+        new GitDiffTool(),
+      ],
+      context.disabledTools,
+    ),
     toolContext: {
       workspace: process.cwd(),
       maxOutputChars: config.maxToolOutputChars,
@@ -263,6 +304,7 @@ function createRuntimeBundle(
     },
     maxTurns,
     initialMessages: record.messages,
+    systemPrompt: context.systemPrompt,
     compactor,
     onMessagesChanged: (messages) => session.updateMessages(messages),
     onContextCompacted: () => session.markCompacted(),
@@ -285,6 +327,7 @@ async function runInteractive(
   initialBundle: RuntimeBundle,
   store: SessionStore,
   config: PawCodeConfig,
+  context: ResolvedContext,
   maxTurns: number,
   permissionManager: PermissionManager,
   readline: ReturnType<typeof createInterface>,
@@ -358,7 +401,15 @@ async function runInteractive(
         // “本会话允许”属于内存授权，切换会话身份时必须主动清空。
         permissionManager.clearSessionRules()
         const session = await createSession(store, bundle.provider, bundle.model)
-        bundle = createRuntimeBundle(session, bundle.provider, bundle.model, maxTurns, config, permissionManager)
+        bundle = createRuntimeBundle(
+          session,
+          bundle.provider,
+          bundle.model,
+          maxTurns,
+          config,
+          permissionManager,
+          context,
+        )
         console.log(`已创建会话 ${session.snapshot().id}\n`)
         continue
       }
@@ -393,7 +444,15 @@ async function runInteractive(
           // 只有实际切换成功后才清空旧会话的内存授权；取消选择必须保持原会话不变。
           permissionManager.clearSessionRules()
           const record = session.snapshot()
-          bundle = createRuntimeBundle(session, record.provider, record.model, maxTurns, config, permissionManager)
+          bundle = createRuntimeBundle(
+            session,
+            record.provider,
+            record.model,
+            maxTurns,
+            config,
+            permissionManager,
+            context,
+          )
           console.log(`已恢复会话 ${record.id}：${record.title}\n`)
           printSessionHistory(record.messages)
         } catch (error) {
@@ -418,7 +477,15 @@ async function runInteractive(
           const name = input.slice('/branch'.length).trim() || undefined
           const session = await SessionManager.fork(store, bundle.session.snapshot(), name)
           const record = session.snapshot()
-          bundle = createRuntimeBundle(session, record.provider, record.model, maxTurns, config, permissionManager)
+          bundle = createRuntimeBundle(
+            session,
+            record.provider,
+            record.model,
+            maxTurns,
+            config,
+            permissionManager,
+            context,
+          )
           console.log(`已创建会话分支 ${record.id}，原会话 ${record.parentSessionId}\n`)
         } catch (error) {
           console.error(`创建分支失败：${error instanceof Error ? error.message : String(error)}\n`)
@@ -428,7 +495,12 @@ async function runInteractive(
 
       const controller = signalState.beginRun()
       try {
-        await renderRun(bundle, input, renderHumanEvent, controller)
+        await renderRun(
+          bundle,
+          input,
+          (event, state) => renderHumanEvent(event, state, options.verbose ?? config.display.verboseTools),
+          controller,
+        )
       } finally {
         signalState.endRun()
       }
@@ -491,7 +563,7 @@ interface RenderState {
   thinkingShown: boolean
 }
 
-function renderHumanEvent(event: AgentEvent, state: RenderState): void {
+function renderHumanEvent(event: AgentEvent, state: RenderState, verboseTools = false): void {
   switch (event.type) {
     case 'turn_started':
       state.thinkingShown = false
@@ -512,10 +584,10 @@ function renderHumanEvent(event: AgentEvent, state: RenderState): void {
     case 'tool_started':
       if (state.streamingText) stdout.write('\n')
       state.streamingText = false
-      writeHumanToolLine(formatToolStarted(event.name, event.argumentsJson, options.verbose ?? false))
+      writeHumanToolLine(formatToolStarted(event.name, event.argumentsJson, verboseTools))
       return
     case 'tool_finished':
-      writeHumanToolLine(formatToolFinished(event.name, event.result, options.verbose ?? false))
+      writeHumanToolLine(formatToolFinished(event.name, event.result, verboseTools))
       return
     case 'context_compacted':
       console.log(
@@ -572,6 +644,49 @@ function renderSessions(sessions: SessionSummary[], json: boolean): void {
       `${session.id}  ${session.updatedAt}  ${session.provider}/${session.model}  ${session.messageCount} 条  ${session.lastRunStatus}  ${label}`,
     )
   }
+}
+
+function renderConfig(loaded: LoadedConfigFile, json: boolean): void {
+  const payload = {
+    sources: loaded.sources,
+    warnings: loaded.warnings,
+    config: redactConfig(loaded.config),
+  }
+  if (json) {
+    writeJson({ version: 1, type: 'config', ...payload })
+    return
+  }
+  console.log('PawCode 分层配置')
+  for (const source of loaded.sources) {
+    const status = source.loaded ? '已加载' : '未找到'
+    const overridden = source.overriddenFields.length > 0 ? `，覆盖：${source.overriddenFields.join(', ')}` : ''
+    console.log(`- [${source.kind}] ${status} ${source.path}${overridden}`)
+  }
+  if (loaded.warnings.length > 0) for (const warning of loaded.warnings) console.error(`警告：${warning}`)
+  console.log(JSON.stringify(payload.config, null, 2))
+}
+
+function renderContext(context: ResolvedContext, configWarnings: string[], json: boolean): void {
+  const payload = {
+    sources: context.sources,
+    disabledTools: context.disabledTools,
+    diagnostics: [...configWarnings, ...context.diagnostics],
+  }
+  if (json) {
+    writeJson({ version: 1, type: 'context', ...payload })
+    return
+  }
+  console.log('PawCode 当前上下文')
+  for (const source of context.sources) {
+    console.log(`- [${source.kind}] ${source.path} (${source.bytes} bytes, sha256 ${source.hash.slice(0, 12)})`)
+  }
+  if (context.disabledTools.length > 0) console.log(`禁用工具：${context.disabledTools.join(', ')}`)
+  for (const diagnostic of payload.diagnostics) console.error(`警告：${diagnostic}`)
+}
+
+function redactConfig(config: LoadedConfigFile['config']): LoadedConfigFile['config'] {
+  if (!config.model?.apiKey) return config
+  return { ...config, model: { ...config.model, apiKey: '<redacted>' } }
 }
 
 interface PickSessionOptions {

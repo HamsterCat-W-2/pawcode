@@ -1,17 +1,20 @@
-import { z } from 'zod'
+import type { PawCodeConfigFile } from './config-schema.js'
 
-const environmentSchema = z.object({
-  MODEL_PROVIDER: z.string().min(1).optional(),
-  MODEL_BASE_URL: z.url().optional(),
-  MODEL_API_KEY: z.string().min(1).optional(),
-  MODEL_NAME: z.string().min(1).optional(),
-  MAX_AGENT_TURNS: z.coerce.number().int().positive().default(10),
-  MAX_TOOL_OUTPUT_CHARS: z.coerce.number().int().positive().default(20_000),
-  CONTEXT_COMPACT_THRESHOLD: z.coerce.number().positive().max(1).default(0.8),
-  CONTEXT_KEEP_RECENT_TOKENS: z.coerce.number().int().positive().default(20_000),
-  MODEL_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(2),
-  MODEL_RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().max(60_000).default(500),
-})
+const defaultConfig = {
+  maxAgentTurns: 10,
+  maxToolOutputChars: 20_000,
+  contextCompactThreshold: 0.8,
+  contextKeepRecentTokens: 20_000,
+  modelMaxRetries: 2,
+  modelRetryBaseDelayMs: 500,
+  instructions: {
+    includeAgentsMd: true,
+    maxFileBytes: 128 * 1024,
+  },
+  display: {
+    verboseTools: false,
+  },
+} as const
 
 export interface PawCodeConfig {
   provider: string
@@ -24,6 +27,22 @@ export interface PawCodeConfig {
   contextKeepRecentTokens: number
   modelMaxRetries: number
   modelRetryBaseDelayMs: number
+  instructions: {
+    files: string[]
+    includeAgentsMd: boolean
+    maxFileBytes: number
+  }
+  context: {
+    appendSystemPrompt: string
+    pathRules: Array<{
+      pattern: string
+      instructions?: string
+      disabledTools: string[]
+    }>
+  }
+  display: {
+    verboseTools: boolean
+  }
 }
 
 export interface ConfigDefaults {
@@ -31,30 +50,41 @@ export interface ConfigDefaults {
   model?: string
 }
 
-// 配置校验集中在这里，其他模块只接收已经合法的强类型配置。
-export function loadConfig(environment: NodeJS.ProcessEnv = process.env, defaults: ConfigDefaults = {}): PawCodeConfig {
-  const result = environmentSchema.safeParse(environment)
+/**
+ * 把已经过来源校验的分层配置投影为 Runtime 使用的扁平配置。
+ * 配置文件读取和敏感字段来源限制由 config-loader 负责，避免 CLI 和 Runtime 各自解释 JSON。
+ */
+export function loadConfig(raw: PawCodeConfigFile = {}, defaults: ConfigDefaults = {}): PawCodeConfig {
+  const model = raw.model?.name ?? defaults.model
+  if (!model) throw new Error('PawCode 配置无效：\nmodel.name: 未设置模型名称')
 
-  if (!result.success) {
-    const details = result.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('\n')
-    throw new Error(`PawCode 配置无效：\n${details}`)
-  }
-
-  const model = result.data.MODEL_NAME ?? defaults.model
-  if (!model) throw new Error('PawCode 配置无效：\nMODEL_NAME: 未设置模型名称')
-
+  const baseUrl = raw.model?.baseUrl?.replace(/\/$/, '')
   return {
-    // 配置了旧版 MODEL_BASE_URL 时使用自定义 OpenAI-compatible Provider；
-    // 否则默认使用 pi-ai 内置的 OpenAI Provider。
-    provider: result.data.MODEL_PROVIDER ?? defaults.provider ?? (result.data.MODEL_BASE_URL ? 'custom' : 'openai'),
-    ...(result.data.MODEL_BASE_URL ? { baseUrl: result.data.MODEL_BASE_URL.replace(/\/$/, '') } : {}),
-    ...(result.data.MODEL_API_KEY ? { apiKey: result.data.MODEL_API_KEY } : {}),
+    provider: raw.model?.provider ?? defaults.provider ?? (baseUrl ? 'custom' : 'openai'),
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(raw.model?.apiKey ? { apiKey: raw.model.apiKey } : {}),
     model,
-    maxAgentTurns: result.data.MAX_AGENT_TURNS,
-    maxToolOutputChars: result.data.MAX_TOOL_OUTPUT_CHARS,
-    contextCompactThreshold: result.data.CONTEXT_COMPACT_THRESHOLD,
-    contextKeepRecentTokens: result.data.CONTEXT_KEEP_RECENT_TOKENS,
-    modelMaxRetries: result.data.MODEL_MAX_RETRIES,
-    modelRetryBaseDelayMs: result.data.MODEL_RETRY_BASE_DELAY_MS,
+    maxAgentTurns: raw.maxAgentTurns ?? defaultConfig.maxAgentTurns,
+    maxToolOutputChars: raw.maxToolOutputChars ?? defaultConfig.maxToolOutputChars,
+    contextCompactThreshold: raw.contextCompactThreshold ?? defaultConfig.contextCompactThreshold,
+    contextKeepRecentTokens: raw.contextKeepRecentTokens ?? defaultConfig.contextKeepRecentTokens,
+    modelMaxRetries: raw.modelMaxRetries ?? defaultConfig.modelMaxRetries,
+    modelRetryBaseDelayMs: raw.modelRetryBaseDelayMs ?? defaultConfig.modelRetryBaseDelayMs,
+    instructions: {
+      files: raw.instructions?.files ?? [],
+      includeAgentsMd: raw.instructions?.includeAgentsMd ?? defaultConfig.instructions.includeAgentsMd,
+      maxFileBytes: raw.instructions?.maxFileBytes ?? defaultConfig.instructions.maxFileBytes,
+    },
+    context: {
+      appendSystemPrompt: raw.context?.appendSystemPrompt ?? '',
+      pathRules: (raw.context?.pathRules ?? []).map((rule) => ({
+        pattern: rule.pattern,
+        ...(rule.instructions !== undefined ? { instructions: rule.instructions } : {}),
+        disabledTools: rule.disabledTools ?? [],
+      })),
+    },
+    display: {
+      verboseTools: raw.display?.verboseTools ?? defaultConfig.display.verboseTools,
+    },
   }
 }

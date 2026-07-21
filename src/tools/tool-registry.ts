@@ -3,9 +3,11 @@ import type { Tool, ToolContext } from './tool.js'
 
 export class ToolRegistry {
   private readonly tools: Map<string, Tool>
+  private readonly disabledTools: Set<string>
 
-  constructor(tools: Tool[]) {
+  constructor(tools: Tool[], disabledTools: string[] = []) {
     this.tools = new Map()
+    this.disabledTools = new Set(disabledTools)
 
     for (const tool of tools) {
       const name = tool.definition.function.name
@@ -17,10 +19,15 @@ export class ToolRegistry {
   }
 
   definitions(): ToolDefinition[] {
-    return [...this.tools.values()].map((tool) => tool.definition)
+    return [...this.tools.values()]
+      .filter((tool) => !this.disabledTools.has(tool.definition.function.name))
+      .map((tool) => tool.definition)
   }
 
   async execute(name: string, argumentsJson: string, context: ToolContext): Promise<string> {
+    if (this.disabledTools.has(name)) {
+      return `工具执行失败：工具已被当前路径规则禁用：${name}`
+    }
     const tool = this.tools.get(name)
     if (!tool) {
       return `工具执行失败：未知工具 ${name}`
