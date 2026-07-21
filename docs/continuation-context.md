@@ -5,14 +5,22 @@
 ## 当前状态
 
 - 项目：Node.js、TypeScript、pnpm 编写的终端 AI 编程 Agent。
-- 版本：v0.4.1。
-- 路径：`/Users/guoxuanloveweiyan/Documents/guoxuan/programe/pawcode`。
-- 分支：`main`。
-- 当前分支跟踪 `origin/main`；更新本文档时，本地 `main` 与 `origin/main` 均指向 `b9c3848`，后续仍以实际 `git status` 和 `git log` 为准。
+- 版本：v0.5 开发中。
+- 项目路径：`pawcode`。
+- 分支：`codex/v0.5-project-context-config`。
+- 当前 HEAD 为 `f4c0e31`，上游为 `ae10a15`；本地仍有用户未跟踪的 `PAWCODE.md`，不得擅自删除、覆盖或提交。
 - v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner，以及 v0.4.1 错误恢复加固均已合并到 `main`。
 - v0.4.1 错误恢复由提交 `19b0e6d` 完成，延续上下文文档由 `986fa20` 更新。
 - 公共可取消列表选择器以及 `/resume`、`pawcode --resume` 的 CLI 回归测试由提交 `b9c3848` 完成并已合并。
 - `.env` 已忽略，绝不能提交密钥。
+
+v0.5 当前提交链：
+
+```text
+f4c0e31 feat: add project init command
+ae10a15 feat: add dynamic project context reload
+2c157aa feat: add layered project context configuration
+```
 
 关键历史：
 
@@ -51,6 +59,10 @@ c66abe8 refactor: split domain types by concept
 - Session schema v1、Zod 磁盘校验、`0600` 权限和临时文件原子替换。
 - Claude Code 风格会话入口：`--continue/-c`、`--resume/-r [id|name]`、`--fork-session`、`--name/-n` 和 `--list-sessions`。
 - 交互会话命令：`/init`、`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。`/init` 扫描项目并在权限确认后生成根目录 `PAWCODE.md`，已有文件不会覆盖。
+- 分层 JSON 配置：用户级 `~/.pawcode/config.json`、项目级 `.pawcode/config.json`、本地级 `.pawcode/config.local.json`；API Key 只允许用户级配置，不再读取 `.env`。
+- 项目上下文：支持用户级/项目级 `PAWCODE.md`、兼容 `AGENTS.md`、`--show-context [path]` 和路径规则。
+- 动态上下文：工具声明目标路径，Runtime 在工具执行前刷新对应目录上下文；上下文变化只影响后续模型请求，不写入会话历史。
+- `/init` 项目初始化：通过 `ProjectInitializer` 扫描项目、应用默认忽略规则和 `.gitignore`，使用候选评分发现元数据，过滤敏感文件，经权限确认后生成根目录 `PAWCODE.md`。
 - 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，普通输入态 `Esc` 清空输入。公共可取消选择器让 `/resume` 中的 `Esc` 返回原会话输入提示，也让启动参数 `pawcode --resume` 中的 `Esc` 正常返回 shell。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
 - `--json` 严格 NDJSON；stdout 不混入人类装饰输出，非交互副作用默认拒绝。
@@ -61,7 +73,7 @@ c66abe8 refactor: split domain types by concept
 - v0.4.1：会话、`write_file` 和 `apply_patch` 使用同目录临时文件、`fsync` 和原子替换。
 - v0.4.1：权限确认响应 Esc/Ctrl+C 的 AbortSignal，stdout `EPIPE` 正常退出。
 
-设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
+设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md) 和 [v0.5-init-design.md](./v0.5-init-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
 
 ## 必须保持的架构边界
 
@@ -96,6 +108,18 @@ AgentRuntime
 ContextCompactor
  ↓ ModelAdapter summary
 历史摘要 + 最近完整轮次
+
+AgentRuntime
+ ↓ target path before tool execution
+RuntimeContextProvider
+ ↓ resolveContext + path rules
+动态 system prompt + ToolRegistry 动态禁用工具
+
+/init
+ ↓ ProjectInitializer
+WorkspaceFiles + ModelAdapter + PermissionManager
+ ↓ atomic write
+PAWCODE.md
 ```
 
 1. `AgentRuntime` 不得直接依赖 `pi-ai` 类型或保存 `pi-ai Context`。
@@ -119,6 +143,10 @@ ContextCompactor
 src/
 ├── cli.ts                         CLI、流式渲染、交互授权、Banner 和 usage 展示
 ├── config/config.ts               分层配置投影与校验
+├── config/config-loader.ts        用户级、项目级、本地级 JSON 配置加载
+├── context/
+│   ├── context-resolver.ts        PAWCODE/AGENTS、路径规则和上下文来源解析
+│   └── runtime-context-provider.ts 工具目标路径触发的动态上下文刷新
 ├── filesystem/atomic-file.ts      fsync、原子替换与死亡进程临时文件清理
 ├── input/
 │   ├── cancelable-selector.ts     可复用列表渲染、序号重试、Esc 取消与监听器清理
@@ -140,6 +168,8 @@ src/
 │   └── tool-event-renderer.ts      默认安静、verbose 可见的工具事件格式
 ├── permissions/
 │   └── permission-manager.ts      allow / ask / deny 与会话规则
+├── project/
+│   └── project-initializer.ts     /init 扫描、候选评分、模型生成和安全写入
 ├── runtime/
 │   ├── agent-event.ts             CLI/TUI 可复用事件
 │   ├── agent-runtime.ts           多轮模型—工具编排与保存钩子
@@ -326,18 +356,19 @@ pnpm dev --list-sessions
 pnpm dev --json "检查项目"
 ```
 
+进入交互模式后输入 `/init` 可生成项目根目录 `PAWCODE.md`；已有文件默认不覆盖。`/init` 当前仅支持交互模式，不支持 JSON 或单次 prompt 模式。
+
 交互模式会询问副作用权限。单次非交互模式必须通过 `--allow-write` 或可重复的 `--allow-command <prefix>` 显式授权。
 
-## 验证基线
+## 当前验证基线
 
-提交 `2053e6c` 完成时：
+`f4c0e31` 完成后：
 
-- Prettier 通过。
-- TypeScript 类型检查通过。
-- 7 个测试文件、22 个测试通过。
-- 构建通过。
-- `node dist/cli.js --version` 输出 `0.3.0`。
+- Prettier、TypeScript 类型检查和构建通过。
+- 22 个测试文件、82 个测试通过。
+- 覆盖分层配置、静态/动态上下文、路径规则、`/init` 扫描、`.gitignore`、敏感文件过滤和已有 `PAWCODE.md` 保护。
 - `git diff --check` 通过。
+- 构建后的 CLI 已验证 `--show-config --json` 和 `--show-context [path]` 输出合法 NDJSON。
 
 标准验证：
 
@@ -359,29 +390,26 @@ pnpm build
 
 `tsx` 在受限沙箱中可能因无法创建 IPC 管道而报 `EPERM`，构建后的 `node dist/cli.js` 可正常运行。
 
-当前 `main` 的 v0.4.1 验证基线：
-
-- 错误恢复基线提交为 `19b0e6d feat: harden error recovery`，公共选择器提交为 `b9c3848 feat: add cancelable session selector`，两者均已合并到 `main`。
-- Prettier、TypeScript 和构建通过。
-- 19 个测试文件、67 个测试通过，包含公共选择器提前取消、回调异常与清理优先级、泛型边界、无效序号重试、Esc/Ctrl+C 取消，以及两个 CLI 入口的子进程回归测试。
-- `node dist/cli.js --version` 输出 `0.4.1`。
-- 构建后 `--list-sessions --json` 输出可解析的空 sessions 事件。
-- JSON 启动错误和缺少 prompt 错误均只输出合法 JSON 行。
-- 默认隐藏成功工具明细，`--verbose` 恢复展示，失败结果始终可见。
-- 宽屏、窄屏、无颜色和非 TTY Banner 专项测试通过，并已检查纯文本边框对齐。
-- 真实 PTY 已验证 `/resume` 无效序号继续等待、Esc 返回原输入提示，以及 `pawcode --resume` Esc 以状态 0 返回 shell。
-- `git diff --check` 通过。
-
 ## 下一步
 
-v0.4.1 及公共可取消选择器已经合并到 `main`。后续按下面的顺序开发，避免 MCP、Hooks、Skills 和子 Agent 分别建立互不兼容的配置、事件与上下文机制。
+v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用现有配置、上下文刷新、结构化事件和权限 seam，避免 MCP、Hooks、Skills 和子 Agent 分别建立互不兼容的机制。
 
-### v0.5.0：项目上下文与分层配置
+### v0.5.x：项目上下文与分层配置（当前阶段）
 
-1. 自动加载项目指令文件，优先设计 PawCode 自有文件，同时评估兼容 `AGENTS.md`。
-2. 建立用户级、项目级和本地级配置的加载顺序、覆盖规则与 schema 校验。
-3. 支持按路径生效的规则，避免整个项目的说明全部进入每一次模型请求。
-4. 提供可检查当前已加载上下文和来源的命令；自动记忆应在格式、边界和清理策略明确后再加入。
+已完成：
+
+1. 用户级、项目级和本地级 JSON 配置及 schema 校验。
+2. `PAWCODE.md`、`AGENTS.md`、路径规则和 `--show-context [path]`。
+3. 工具目标路径触发的动态上下文刷新，且不污染 Session 历史。
+4. `/init` 项目上下文生成、敏感文件保护、`.gitignore` 和通用候选评分扫描。
+
+后续补强：
+
+1. 增加 `/init --full` 或等价的分块摘要模式，支持大型仓库的更完整分析。
+2. 为上下文扫描增加可见诊断，列出截断、跳过和未读取的文件及原因。
+3. 完善 `.gitignore` 复杂语义和符号链接场景的测试；必要时复用 Git 的路径匹配能力。
+4. 支持已有 `PAWCODE.md` 的安全更新模式，只修改 PawCode 管理区域，不覆盖用户手写规则。
+5. 增加 `/memory` 或上下文来源检查界面，方便用户查看当前生效的指令文件。
 
 ### v0.5.1：MCP Client
 
@@ -423,5 +451,5 @@ IDE 插件、插件市场、CI 集成和远程会话属于更后期的平台化�
 docs/v0.4-design.md、docs/v0.3-design.md 和 docs/streaming-output.md，然后检查 git status --short --branch。保持 PawCode
 Domain 与 PiAiModelAdapter 的边界；所有副作用必须经过 ToolRegistry 和
 PermissionManager。新增或修改代码必须添加便于 review 的中文注释；修改后运行格式、
-类型、测试和构建验证。当前稳定基线在 main，下一阶段从 v0.5.0 项目上下文与分层配置开始。
+类型、测试和构建验证。当前开发基线在 `codex/v0.5-project-context-config`，下一步优先补强大型项目的 `/init` 分块分析、上下文诊断和已有文件更新策略。
 ```
