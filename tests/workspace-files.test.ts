@@ -35,6 +35,17 @@ describe('WorkspaceFiles', () => {
     await expect(files.write('.git/config', 'blocked')).rejects.toThrow('禁止通过文件工具修改 .git')
   })
 
+  it('允许显式访问工作区内的符号链接，但目录扫描不跟随链接', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'pawcode-safe-inside-'))
+    await mkdir(path.join(root, 'real'))
+    await writeFile(path.join(root, 'real', 'inside.txt'), 'inside')
+    await symlink(path.join(root, 'real'), path.join(root, 'linked'))
+    const files = await WorkspaceFiles.create(root)
+
+    await expect(files.read('linked/inside.txt')).resolves.toContain('inside')
+    await expect(files.list('.')).resolves.not.toContain('linked/inside.txt')
+  })
+
   it('创建文件并执行精确文本替换', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'pawcode-write-'))
     const files = await WorkspaceFiles.create(root)

@@ -365,10 +365,10 @@ pnpm dev --json "检查项目"
 
 ## 当前验证基线
 
-`cdbf57b` 完成后：
+`cdbf57b` 及当前忽略规则加固修改完成后：
 
 - Prettier、TypeScript 类型检查和构建通过。
-- 22 个测试文件、85 个测试通过。
+- 22 个测试文件、87 个测试通过。
 - 覆盖分层配置、静态/动态上下文、路径规则、快速/完整 `/init` 扫描、分块摘要、`.gitignore`、敏感文件过滤和已有 `PAWCODE.md` 保护。
 - `git diff --check` 通过。
 - 构建后的 CLI 已验证 `--show-config --json` 和 `--show-context [path]` 输出合法 NDJSON。
@@ -408,10 +408,15 @@ v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用
 
 后续补强：
 
-1. 为快速和完整 `/init` 增加统一的可见诊断，列出截断、跳过和未读取的文件及原因（技术方案见 `docs/v0.5-init-diagnostics-design.md`）。
-2. 完善 `.gitignore` 复杂语义和符号链接场景的测试；必要时复用 Git 的路径匹配能力。
-3. 支持已有 `PAWCODE.md` 的安全更新模式，只修改 PawCode 管理区域，不覆盖用户手写规则。
-4. 增加 `/memory` 或上下文来源检查界面，方便用户查看当前生效的指令文件。
+已完成：
+
+1. 为快速和完整 `/init` 增加统一的可见诊断，列出截断、跳过和未读取的文件及原因（见 `docs/v0.5-init-diagnostics-design.md`）。
+2. 完善 `.gitignore` 复杂 glob、反选、转义字符和目录规则测试；补充工作区内外符号链接测试（见 `docs/v0.5-init-ignore-safety-design.md`）。
+
+后续补强：
+
+1. 支持已有 `PAWCODE.md` 的安全更新模式，只修改 PawCode 管理区域，不覆盖用户手写规则。
+2. 增加 `/memory` 或上下文来源检查界面，方便用户查看当前生效的指令文件。
 
 ### v0.5.1：MCP Client
 

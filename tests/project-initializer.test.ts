@@ -72,6 +72,28 @@ describe('ProjectInitializer', () => {
     expect(snapshot.tree).toContain('generated/keep.md')
   })
 
+  it('兼容嵌套 glob、根目录 glob、目录规则和转义字符', async () => {
+    const root = await fixture()
+    await mkdir(path.join(root, 'src/cache/deep'), { recursive: true })
+    await mkdir(path.join(root, 'logs.dir'), { recursive: true })
+    await writeFile(
+      path.join(root, '.gitignore'),
+      '**/cache/**\n**/secret.txt\nlogs.dir/\n\\#keep.txt\n!src/cache/keep.txt\n',
+    )
+    await writeFile(path.join(root, 'cache.tmp'), 'root cache')
+    await writeFile(path.join(root, 'src/cache/deep/secret.txt'), 'secret')
+    await writeFile(path.join(root, 'src/cache/keep.txt'), 'keep')
+    await writeFile(path.join(root, 'logs.dir/entry.txt'), 'ignored directory')
+    await writeFile(path.join(root, '#keep.txt'), 'literal hash')
+
+    const snapshot = await createInitializer(root).inspect()
+
+    expect(snapshot.tree).not.toContain('src/cache/deep/secret.txt')
+    expect(snapshot.tree).toContain('src/cache/keep.txt')
+    expect(snapshot.tree).not.toContain('logs.dir/entry.txt')
+    expect(snapshot.tree).not.toContain('#keep.txt')
+  })
+
   it('生成 Markdown 并通过权限后写入项目根目录', async () => {
     const root = await fixture()
     const content = '# Demo\n\n## 项目用途\n示例项目\n'

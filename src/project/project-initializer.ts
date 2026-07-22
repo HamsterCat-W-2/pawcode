@@ -428,17 +428,26 @@ async function readGitignore(files: WorkspaceFiles): Promise<GitignoreRule[]> {
     const content = await files.read('.gitignore', 1, 1_000)
     return content
       .split(/\r?\n/)
-      .map((line) => line.replace(/^\d+:\s?/, '').trim())
-      .filter((line) => line && !line.startsWith('#'))
-      .map((line) => {
-        const negated = line.startsWith('!')
-        const pattern = (negated ? line.slice(1) : line).replace(/^\//, '')
-        return { pattern: pattern.replace(/\/$/, ''), negated, directoryOnly: line.endsWith('/') }
-      })
+      .map(parseGitignoreLine)
+      .filter((rule): rule is GitignoreRule => rule !== undefined)
       .filter((rule) => rule.pattern.length > 0)
   } catch {
     return []
   }
+}
+
+function parseGitignoreLine(line: string): GitignoreRule | undefined {
+  const trimmed = trimGitignoreWhitespace(line.replace(/^\d+:\s?/, '').replace(/\r$/, ''))
+  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('\\#')) {
+    if (!trimmed.startsWith('\\#')) return undefined
+  }
+
+  const negated = trimmed.startsWith('!')
+  const rawPattern = negated ? trimmed.slice(1) : trimmed
+  const directoryOnly = rawPattern.endsWith('/') && !isEscaped(rawPattern, rawPattern.length - 1)
+  const withoutDirectoryMarker = directoryOnly ? rawPattern.slice(0, -1) : rawPattern
+  const pattern = unescapeGitignore(withoutDirectoryMarker.replace(/^\//, ''))
+  return { pattern, negated, directoryOnly }
 }
 
 function isGitignored(entry: string, rules: GitignoreRule[]): boolean {
@@ -453,30 +462,79 @@ function isGitignored(entry: string, rules: GitignoreRule[]): boolean {
 function matchesGitignorePattern(pattern: string, entry: string, directoryOnly: boolean): boolean {
   const normalizedEntry = entry.replace(/\/$/, '')
   const segments = normalizedEntry.split('/').filter(Boolean)
-  const hasSlash = pattern.includes('/')
-  const expression = globExpression(pattern)
-  if (!hasSlash) {
-    return segments.some((segment) => new RegExp(`^${expression}$`).test(segment))
+  const patternSegments = pattern.split('/').filter(Boolean)
+  if (patternSegments.length === 0) return false
+
+  // 没有斜杠的规则可匹配任意层级；目录规则不能把同名普通文件误判为目录。
+  if (patternSegments.length === 1) {
+    const candidates = directoryOnly && !entry.endsWith('/') ? segments.slice(0, -1) : segments
+    return candidates.some((segment) => matchGitignoreSegment(patternSegments[0] ?? '', segment))
   }
-  return new RegExp(`^${expression}${directoryOnly ? '(?:/.*)?' : ''}$`).test(normalizedEntry)
+
+  return directoryOnly
+    ? matchGitignorePrefix(patternSegments, segments)
+    : matchGitignoreSegments(patternSegments, segments)
 }
 
-function globExpression(pattern: string): string {
+function matchGitignoreSegments(pattern: string[], entry: string[]): boolean {
+  if (pattern.length === 0) return entry.length === 0
+  const head = pattern[0]
+  if (head === '**') {
+    return (
+      matchGitignoreSegments(pattern.slice(1), entry) ||
+      (entry.length > 0 && matchGitignoreSegments(pattern, entry.slice(1)))
+    )
+  }
+  return (
+    entry.length > 0 &&
+    matchGitignoreSegment(head ?? '', entry[0] ?? '') &&
+    matchGitignoreSegments(pattern.slice(1), entry.slice(1))
+  )
+}
+
+function matchGitignorePrefix(pattern: string[], entry: string[]): boolean {
+  if (pattern.length === 0) return true
+  const head = pattern[0]
+  if (head === '**') {
+    return (
+      matchGitignorePrefix(pattern.slice(1), entry) ||
+      (entry.length > 0 && matchGitignorePrefix(pattern, entry.slice(1)))
+    )
+  }
+  return (
+    entry.length > 0 &&
+    matchGitignoreSegment(head ?? '', entry[0] ?? '') &&
+    matchGitignorePrefix(pattern.slice(1), entry.slice(1))
+  )
+}
+
+function matchGitignoreSegment(pattern: string, value: string): boolean {
   let expression = ''
   for (let index = 0; index < pattern.length; index += 1) {
     const character = pattern[index] ?? ''
-    if (character === '*' && pattern[index + 1] === '*') {
-      expression += '.*'
-      index += 1
-    } else if (character === '*') {
-      expression += '[^/]*'
-    } else if (character === '?') {
-      expression += '[^/]'
-    } else {
-      expression += escapeRegExp(character)
-    }
+    if (character === '*') expression += '.*'
+    else if (character === '?') expression += '.'
+    else expression += escapeRegExp(character)
   }
-  return expression
+  return new RegExp(`^${expression}$`).test(value)
+}
+
+function trimGitignoreWhitespace(line: string): string {
+  let start = 0
+  while (start < line.length && /\s/.test(line[start] ?? '')) start += 1
+  let end = line.length
+  while (end > start && /\s/.test(line[end - 1] ?? '') && !isEscaped(line, end - 1)) end -= 1
+  return line.slice(start, end)
+}
+
+function unescapeGitignore(pattern: string): string {
+  return pattern.replace(/\\([#! ])/g, '$1')
+}
+
+function isEscaped(value: string, index: number): boolean {
+  let slashCount = 0
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor -= 1) slashCount += 1
+  return slashCount % 2 === 1
 }
 
 function baseCandidateScore(entry: string): number {
