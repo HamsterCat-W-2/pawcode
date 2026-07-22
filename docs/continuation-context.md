@@ -8,7 +8,7 @@
 - 版本：v0.5 开发中。
 - 项目路径：`pawcode`。
 - 分支：`codex/v0.5-project-context-config`。
-- 当前 HEAD 为 `f4c0e31`，上游为 `ae10a15`；本地仍有用户未跟踪的 `PAWCODE.md`，不得擅自删除、覆盖或提交。
+- 当前 HEAD 为 `cdbf57b`，分支 `codex/v0.5-project-context-config`；工作区状态以实际 `git status` 为准，不得擅自删除、覆盖或提交用户文件。
 - v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner，以及 v0.4.1 错误恢复加固均已合并到 `main`。
 - v0.4.1 错误恢复由提交 `19b0e6d` 完成，延续上下文文档由 `986fa20` 更新。
 - 公共可取消列表选择器以及 `/resume`、`pawcode --resume` 的 CLI 回归测试由提交 `b9c3848` 完成并已合并。
@@ -17,6 +17,8 @@
 v0.5 当前提交链：
 
 ```text
+cdbf57b perf: optimize startup initialization
+167b29d feat: add full project initialization
 f4c0e31 feat: add project init command
 ae10a15 feat: add dynamic project context reload
 2c157aa feat: add layered project context configuration
@@ -63,6 +65,7 @@ c66abe8 refactor: split domain types by concept
 - 项目上下文：支持用户级/项目级 `PAWCODE.md`、兼容 `AGENTS.md`、`--show-context [path]` 和路径规则。
 - 动态上下文：工具声明目标路径，Runtime 在工具执行前刷新对应目录上下文；上下文变化只影响后续模型请求，不写入会话历史。
 - `/init` 项目初始化：通过 `ProjectInitializer` 扫描项目、应用默认忽略规则和 `.gitignore`，使用候选评分发现元数据，过滤敏感文件，经权限确认后生成根目录 `PAWCODE.md`；`/init --full` 增加完整文件索引、目录分块和逐块摘要汇总。
+- 启动性能：模型与工具按需加载，动态上下文提供器延迟到首次工具调用前创建，会话恢复扫描单次读取；`--verbose-startup` 可输出启动阶段耗时。
 - 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，普通输入态 `Esc` 清空输入。公共可取消选择器让 `/resume` 中的 `Esc` 返回原会话输入提示，也让启动参数 `pawcode --resume` 中的 `Esc` 正常返回 shell。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
 - `--json` 严格 NDJSON；stdout 不混入人类装饰输出，非交互副作用默认拒绝。
@@ -362,10 +365,10 @@ pnpm dev --json "检查项目"
 
 ## 当前验证基线
 
-`f4c0e31` 完成后：
+`cdbf57b` 完成后：
 
 - Prettier、TypeScript 类型检查和构建通过。
-- 22 个测试文件、83 个测试通过。
+- 22 个测试文件、85 个测试通过。
 - 覆盖分层配置、静态/动态上下文、路径规则、快速/完整 `/init` 扫描、分块摘要、`.gitignore`、敏感文件过滤和已有 `PAWCODE.md` 保护。
 - `git diff --check` 通过。
 - 构建后的 CLI 已验证 `--show-config --json` 和 `--show-context [path]` 输出合法 NDJSON。
@@ -405,7 +408,7 @@ v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用
 
 后续补强：
 
-1. 为快速和完整 `/init` 增加统一的可见诊断，列出截断、跳过和未读取的文件及原因。
+1. 为快速和完整 `/init` 增加统一的可见诊断，列出截断、跳过和未读取的文件及原因（技术方案见 `docs/v0.5-init-diagnostics-design.md`）。
 2. 完善 `.gitignore` 复杂语义和符号链接场景的测试；必要时复用 Git 的路径匹配能力。
 3. 支持已有 `PAWCODE.md` 的安全更新模式，只修改 PawCode 管理区域，不覆盖用户手写规则。
 4. 增加 `/memory` 或上下文来源检查界面，方便用户查看当前生效的指令文件。

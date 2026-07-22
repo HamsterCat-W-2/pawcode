@@ -29,7 +29,7 @@ import { systemPrompt } from './runtime/system-prompt.js'
 import { SessionManager } from './sessions/session-manager.js'
 import type { SessionSummary } from './sessions/session-schema.js'
 import { SessionStore } from './sessions/session-store.js'
-import type { ProjectInitEvent } from './project/project-initializer.js'
+import type { ProjectInitEvent, ProjectSnapshot } from './project/project-initializer.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -575,6 +575,7 @@ async function runProjectInit(
       return
     }
 
+    renderProjectInitDiagnostics(snapshot)
     console.log(`\n正在${full ? '完整分析项目并生成' : '分析项目并生成'} PAWCODE.md...`)
     const content = full
       ? await initializer.generateFull(snapshot, (event) => renderProjectInitEvent(event), controller.signal)
@@ -603,7 +604,7 @@ function printStartupReport(profiler: StartupProfiler): void {
 function renderProjectInitEvent(event: ProjectInitEvent): void {
   switch (event.type) {
     case 'init_scan_started':
-      console.log(`扫描项目：${event.fileCount} 个文件进入完整分析`)
+      console.log(`扫描项目：${event.fileCount} 个文件进入完整分析，拆分为 ${event.chunkCount} 个分块`)
       return
     case 'init_chunk_completed':
       console.log(`生成摘要：${event.completed}/${event.total}（${event.chunkId}）`)
@@ -614,6 +615,28 @@ function renderProjectInitEvent(event: ProjectInitEvent): void {
     case 'init_generation_completed':
       console.log(`摘要完成：${event.completedChunks} 个成功，${event.failedChunks} 个失败`)
   }
+}
+
+function renderProjectInitDiagnostics(snapshot: ProjectSnapshot): void {
+  const stats = snapshot.stats
+  console.log(
+    `\n扫描报告：${stats.mode === 'full' ? '完整' : '快速'}模式，发现 ${stats.discoveredFiles} 个文件，纳入分析 ${stats.includedFiles} 个，读取 ${stats.selectedFiles} 个，分块 ${stats.chunkCount} 个`,
+  )
+  const summary: string[] = []
+  if (stats.ignoredFiles > 0) summary.push(`默认安全规则跳过 ${stats.ignoredFiles} 个`)
+  if (stats.gitignoredFiles > 0) summary.push(`.gitignore 跳过 ${stats.gitignoredFiles} 个`)
+  if (stats.treeTruncated) summary.push('项目树达到展示上限')
+  if (summary.length > 0) console.log(`扫描限制：${summary.join('；')}`)
+
+  const diagnostics = snapshot.diagnostics ?? []
+  if (diagnostics.length === 0) {
+    console.log('扫描诊断：未发现跳过、读取失败或截断项。')
+    return
+  }
+  console.log(`扫描诊断：${diagnostics.length} 项`)
+  const visible = diagnostics.slice(0, 80)
+  for (const diagnostic of visible) console.log(`- ${diagnostic.path}：${diagnostic.reason}`)
+  if (diagnostics.length > visible.length) console.log(`- 其余 ${diagnostics.length - visible.length} 项未展开`)
 }
 
 function clearCurrentInput(readline: ReturnType<typeof createInterface>): void {

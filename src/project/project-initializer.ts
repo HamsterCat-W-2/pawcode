@@ -15,7 +15,7 @@ const fullChunkBytes = 48 * 1024
 const fullMaxChunks = 128
 
 export type ProjectInitEvent =
-  | { type: 'init_scan_started'; fileCount: number }
+  | { type: 'init_scan_started'; fileCount: number; chunkCount: number; diagnostics: ProjectDiagnostic[] }
   | { type: 'init_chunk_completed'; completed: number; total: number; chunkId: string }
   | { type: 'init_chunk_failed'; completed: number; total: number; chunkId: string; reason: string }
   | { type: 'init_generation_completed'; completedChunks: number; failedChunks: number }
@@ -35,12 +35,24 @@ export interface ProjectDiagnostic {
   reason: string
 }
 
+export interface ProjectScanStats {
+  mode: 'quick' | 'full'
+  discoveredFiles: number
+  ignoredFiles: number
+  gitignoredFiles: number
+  includedFiles: number
+  selectedFiles: number
+  chunkCount: number
+  treeTruncated: boolean
+}
+
 export interface ProjectSnapshot {
   targetExists: boolean
   tree: string[]
   files: ProjectFile[]
   chunks?: ProjectChunk[]
   diagnostics?: ProjectDiagnostic[]
+  stats: ProjectScanStats
 }
 
 export interface ProjectInitializerOptions {
@@ -66,30 +78,63 @@ export class ProjectInitializer {
       .map((entry) => entry.replaceAll(path.sep, '/'))
       .sort()
     const gitignoreRules = await readGitignore(workspaceFiles)
+    const fileEntries = rawEntries.filter((entry) => !entry.endsWith('/'))
+    const ignoredEntries = fileEntries.filter((entry) => isIgnoredEntry(entry))
+    const gitignoredEntries = fileEntries.filter(
+      (entry) => !isIgnoredEntry(entry) && isGitignored(entry, gitignoreRules),
+    )
     const entries = rawEntries.filter((entry) => !isIgnoredEntry(entry) && !isGitignored(entry, gitignoreRules))
     const baseSnapshot = {
       targetExists: rawEntries.some((entry) => entry === 'PAWCODE.md'),
       tree: entries.slice(0, 2_000),
+      stats: {
+        mode,
+        discoveredFiles: fileEntries.length,
+        ignoredFiles: ignoredEntries.length,
+        gitignoredFiles: gitignoredEntries.length,
+        includedFiles: entries.filter((entry) => !entry.endsWith('/')).length,
+        selectedFiles: 0,
+        chunkCount: 0,
+        treeTruncated: entries.length > 2_000,
+      } satisfies ProjectScanStats,
     }
     if (mode === 'full') return this.inspectFull(workspaceFiles, entries, baseSnapshot, signal)
 
     const selected = await selectMetadataFiles(entries, workspaceFiles)
+    const diagnostics: ProjectDiagnostic[] = []
     const files: ProjectFile[] = []
     let totalBytes = 0
 
     for (const filePath of selected) {
-      if (totalBytes >= maxSnapshotBytes) break
+      if (totalBytes >= maxSnapshotBytes) {
+        diagnostics.push({ path: '.', reason: `快速扫描达到 ${maxSnapshotBytes} bytes 上限，后续候选未读取` })
+        break
+      }
       try {
         const content = await workspaceFiles.read(filePath, 1, 1_000)
         const clipped = content.slice(0, Math.min(maxFileBytes, maxSnapshotBytes - totalBytes))
         files.push({ path: filePath, content: clipped })
         totalBytes += Buffer.byteLength(clipped, 'utf8')
-      } catch {
+        if (clipped.length < content.length) {
+          diagnostics.push({ path: filePath, reason: `快速扫描内容超过 ${maxFileBytes} bytes，已截断` })
+        }
+      } catch (error) {
         // 文件可能在扫描后被删除或变成不可读；项目树仍然可以用于生成草稿。
+        diagnostics.push({
+          path: filePath,
+          reason: `读取失败：${error instanceof Error ? error.message : String(error)}`,
+        })
       }
     }
 
-    return { ...baseSnapshot, tree: entries.slice(0, 600), files }
+    const tree = entries.slice(0, 600)
+    return {
+      ...baseSnapshot,
+      tree,
+      files,
+      diagnostics,
+      stats: { ...baseSnapshot.stats, selectedFiles: files.length, treeTruncated: entries.length > tree.length },
+    }
   }
 
   async generate(snapshot: ProjectSnapshot): Promise<string> {
@@ -107,7 +152,12 @@ export class ProjectInitializer {
     const chunks = snapshot.chunks ?? []
     const summaries: Array<{ chunkId: string; summary: string }> = []
     let failedChunks = 0
-    onEvent?.({ type: 'init_scan_started', fileCount: chunks.reduce((count, chunk) => count + chunk.files.length, 0) })
+    onEvent?.({
+      type: 'init_scan_started',
+      fileCount: chunks.reduce((count, chunk) => count + chunk.files.length, 0),
+      chunkCount: chunks.length,
+      diagnostics: snapshot.diagnostics ?? [],
+    })
 
     for (let index = 0; index < chunks.length; index += 1) {
       signal?.throwIfAborted()
@@ -144,7 +194,7 @@ export class ProjectInitializer {
   private async inspectFull(
     files: WorkspaceFiles,
     entries: string[],
-    baseSnapshot: Pick<ProjectSnapshot, 'targetExists' | 'tree'>,
+    baseSnapshot: Pick<ProjectSnapshot, 'targetExists' | 'tree' | 'stats'>,
     signal?: AbortSignal,
   ): Promise<ProjectSnapshot> {
     const fileEntries = entries.filter((entry) => !entry.endsWith('/'))
@@ -166,7 +216,17 @@ export class ProjectInitializer {
       for (const part of parts.chunks) {
         if (chunks.length >= fullMaxChunks) {
           diagnostics.push({ path: filePath, reason: '达到完整扫描分块上限，后续内容未加入模型输入' })
-          return { ...baseSnapshot, files: [], chunks, diagnostics }
+          return {
+            ...baseSnapshot,
+            files: [],
+            chunks,
+            diagnostics,
+            stats: {
+              ...baseSnapshot.stats,
+              selectedFiles: chunks.reduce((count, chunk) => count + chunk.files.length, 0),
+              chunkCount: chunks.length,
+            },
+          }
         }
         const directory = path.posix.dirname(filePath)
         const previous = lastChunkByDirectory.get(directory)
@@ -181,7 +241,17 @@ export class ProjectInitializer {
         }
       }
     }
-    return { ...baseSnapshot, files: [], chunks, diagnostics }
+    return {
+      ...baseSnapshot,
+      files: [],
+      chunks,
+      diagnostics,
+      stats: {
+        ...baseSnapshot.stats,
+        selectedFiles: chunks.reduce((count, chunk) => count + chunk.files.length, 0),
+        chunkCount: chunks.length,
+      },
+    }
   }
 
   private async summarizeChunk(chunk: ProjectChunk, signal?: AbortSignal): Promise<string> {

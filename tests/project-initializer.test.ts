@@ -55,6 +55,8 @@ describe('ProjectInitializer', () => {
     expect(snapshot.files.some((file) => file.path === 'src/index.ts')).toBe(false)
     expect(snapshot.tree.some((entry) => entry.includes('node_modules'))).toBe(false)
     expect(JSON.stringify(snapshot)).not.toContain('secret')
+    expect(snapshot.stats.ignoredFiles).toBeGreaterThan(0)
+    expect(snapshot.stats.selectedFiles).toBe(snapshot.files.length)
   })
 
   it('使用 .gitignore 过滤项目生成物，同时保留 negation 规则恢复的路径', async () => {
@@ -117,13 +119,17 @@ describe('ProjectInitializer', () => {
     })
 
     const snapshot = await initializer.inspect('full')
-    const generated = await initializer.generateFull(snapshot)
+    const events: string[] = []
+    const generated = await initializer.generateFull(snapshot, (event) => events.push(event.type))
 
     expect(snapshot.chunks?.some((chunk) => chunk.files.some((file) => file.path.includes('src/deep/module')))).toBe(
       true,
     )
     expect(generated).toBe('# 摘要\n')
     expect(model.requests.length).toBe((snapshot.chunks?.length ?? 0) + 1)
+    expect(snapshot.stats.chunkCount).toBe(snapshot.chunks?.length)
+    expect(events[0]).toBe('init_scan_started')
+    expect(events.at(-1)).toBe('init_generation_completed')
   })
 })
 
