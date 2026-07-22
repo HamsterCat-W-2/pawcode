@@ -23,7 +23,7 @@ export class WorkspaceFiles {
     const info = await stat(target)
     if (!info.isDirectory()) throw new Error('目标不是目录')
 
-    const entries = await this.walk(target, Math.max(0, Math.min(maxDepth, 5)))
+    const entries = await this.walk(target, Math.max(0, Math.min(maxDepth, 20)))
     return entries.map((entry) => path.relative(this.root, entry))
   }
 

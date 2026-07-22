@@ -1,4 +1,5 @@
 import path from 'node:path'
+import type { ModelRequest } from '../domain/model.js'
 import type { ModelAdapter } from '../models/model-adapter.js'
 import type { PermissionManager } from '../permissions/permission-manager.js'
 import { WorkspaceFiles } from '../tools/workspace-files.js'
@@ -8,11 +9,38 @@ const maxFileBytes = 32 * 1024
 const defaultIgnoredDirectories = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.next'])
 const maxProbeFiles = 400
 const maxProbeBytes = 512 * 1024
+const fullMaxFiles = 2_000
+const fullMaxFileBytes = 256 * 1024
+const fullChunkBytes = 48 * 1024
+const fullMaxChunks = 128
+
+export type ProjectInitEvent =
+  | { type: 'init_scan_started'; fileCount: number }
+  | { type: 'init_chunk_completed'; completed: number; total: number; chunkId: string }
+  | { type: 'init_chunk_failed'; completed: number; total: number; chunkId: string; reason: string }
+  | { type: 'init_generation_completed'; completedChunks: number; failedChunks: number }
+
+export interface ProjectFile {
+  path: string
+  content: string
+}
+
+export interface ProjectChunk {
+  id: string
+  files: ProjectFile[]
+}
+
+export interface ProjectDiagnostic {
+  path: string
+  reason: string
+}
 
 export interface ProjectSnapshot {
   targetExists: boolean
   tree: string[]
-  files: Array<{ path: string; content: string }>
+  files: ProjectFile[]
+  chunks?: ProjectChunk[]
+  diagnostics?: ProjectDiagnostic[]
 }
 
 export interface ProjectInitializerOptions {
@@ -31,13 +59,22 @@ export class ProjectInitializer {
     this.files = WorkspaceFiles.create(options.workspace)
   }
 
-  async inspect(): Promise<ProjectSnapshot> {
+  async inspect(mode: 'quick' | 'full' = 'quick', signal?: AbortSignal): Promise<ProjectSnapshot> {
     const workspaceFiles = await this.files
-    const rawEntries = (await workspaceFiles.list('.', 3)).map((entry) => entry.replaceAll(path.sep, '/')).sort()
+    signal?.throwIfAborted()
+    const rawEntries = (await workspaceFiles.list('.', mode === 'full' ? 20 : 3))
+      .map((entry) => entry.replaceAll(path.sep, '/'))
+      .sort()
     const gitignoreRules = await readGitignore(workspaceFiles)
     const entries = rawEntries.filter((entry) => !isIgnoredEntry(entry) && !isGitignored(entry, gitignoreRules))
+    const baseSnapshot = {
+      targetExists: rawEntries.some((entry) => entry === 'PAWCODE.md'),
+      tree: entries.slice(0, 2_000),
+    }
+    if (mode === 'full') return this.inspectFull(workspaceFiles, entries, baseSnapshot, signal)
+
     const selected = await selectMetadataFiles(entries, workspaceFiles)
-    const files: Array<{ path: string; content: string }> = []
+    const files: ProjectFile[] = []
     let totalBytes = 0
 
     for (const filePath of selected) {
@@ -52,16 +89,119 @@ export class ProjectInitializer {
       }
     }
 
-    return {
-      targetExists: rawEntries.some((entry) => entry === 'PAWCODE.md'),
-      tree: entries.slice(0, 600),
-      files,
-    }
+    return { ...baseSnapshot, tree: entries.slice(0, 600), files }
   }
 
   async generate(snapshot: ProjectSnapshot): Promise<string> {
     if (snapshot.targetExists) throw new Error('项目根目录已存在 PAWCODE.md，为避免覆盖用户规则，本次未生成文件')
 
+    return this.generateFromInput(snapshot, JSON.stringify(snapshot, null, 2))
+  }
+
+  async generateFull(
+    snapshot: ProjectSnapshot,
+    onEvent?: (event: ProjectInitEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    assertCanGenerate(snapshot)
+    const chunks = snapshot.chunks ?? []
+    const summaries: Array<{ chunkId: string; summary: string }> = []
+    let failedChunks = 0
+    onEvent?.({ type: 'init_scan_started', fileCount: chunks.reduce((count, chunk) => count + chunk.files.length, 0) })
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      signal?.throwIfAborted()
+      const chunk = chunks[index]
+      if (!chunk) continue
+      try {
+        const summary = await this.summarizeChunk(chunk, signal)
+        summaries.push({ chunkId: chunk.id, summary })
+        onEvent?.({ type: 'init_chunk_completed', completed: index + 1, total: chunks.length, chunkId: chunk.id })
+      } catch (error) {
+        failedChunks += 1
+        const reason = error instanceof Error ? error.message : String(error)
+        onEvent?.({ type: 'init_chunk_failed', completed: index + 1, total: chunks.length, chunkId: chunk.id, reason })
+      }
+    }
+
+    onEvent?.({ type: 'init_generation_completed', completedChunks: summaries.length, failedChunks })
+    const input = JSON.stringify(
+      {
+        tree: snapshot.tree,
+        metadata: snapshot.files,
+        summaries,
+        diagnostics: [
+          ...(snapshot.diagnostics ?? []),
+          ...(failedChunks > 0 ? [{ path: '.', reason: `${failedChunks} 个分块摘要失败` }] : []),
+        ],
+      },
+      null,
+      2,
+    )
+    return this.generateFromInput(snapshot, input, signal)
+  }
+
+  private async inspectFull(
+    files: WorkspaceFiles,
+    entries: string[],
+    baseSnapshot: Pick<ProjectSnapshot, 'targetExists' | 'tree'>,
+    signal?: AbortSignal,
+  ): Promise<ProjectSnapshot> {
+    const fileEntries = entries.filter((entry) => !entry.endsWith('/'))
+    const diagnostics: ProjectDiagnostic[] = []
+    if (fileEntries.length > fullMaxFiles) {
+      diagnostics.push({
+        path: '.',
+        reason: `文件数量超过完整扫描上限，已跳过 ${fileEntries.length - fullMaxFiles} 个文件`,
+      })
+    }
+    const chunks: ProjectChunk[] = []
+    const chunkCounts = new Map<string, number>()
+    const lastChunkByDirectory = new Map<string, ProjectChunk>()
+    for (const filePath of fileEntries.slice(0, fullMaxFiles)) {
+      signal?.throwIfAborted()
+      const parts = await readFullFile(files, filePath, signal)
+      if (parts.diagnostic) diagnostics.push({ path: filePath, reason: parts.diagnostic })
+      if (parts.chunks.length === 0) continue
+      for (const part of parts.chunks) {
+        if (chunks.length >= fullMaxChunks) {
+          diagnostics.push({ path: filePath, reason: '达到完整扫描分块上限，后续内容未加入模型输入' })
+          return { ...baseSnapshot, files: [], chunks, diagnostics }
+        }
+        const directory = path.posix.dirname(filePath)
+        const previous = lastChunkByDirectory.get(directory)
+        if (previous && byteLength(previous.files) + Buffer.byteLength(part.content, 'utf8') <= fullChunkBytes) {
+          previous.files.push(part)
+        } else {
+          const count = (chunkCounts.get(directory) ?? 0) + 1
+          const next = { id: `${directory}#${count}`, files: [part] }
+          chunks.push(next)
+          lastChunkByDirectory.set(directory, next)
+          chunkCounts.set(directory, count)
+        }
+      }
+    }
+    return { ...baseSnapshot, files: [], chunks, diagnostics }
+  }
+
+  private async summarizeChunk(chunk: ProjectChunk, signal?: AbortSignal): Promise<string> {
+    const request = {
+      messages: [
+        {
+          role: 'system' as const,
+          content:
+            '你是 PawCode 的项目分析器。只根据给定文件事实生成该模块的简洁 Markdown 摘要，不要编造，不要输出 API Key、密码、Token、私钥或环境变量值。必须说明模块职责、关键文件、数据流、开发命令、测试方式和未确认事项。',
+        },
+        { role: 'user' as const, content: JSON.stringify(chunk, null, 2) },
+      ],
+      tools: [],
+      ...(signal ? { signal } : {}),
+    }
+    return collectModelText(this.options.model, request, '分块摘要为空')
+  }
+
+  private async generateFromInput(snapshot: ProjectSnapshot, input: string, signal?: AbortSignal): Promise<string> {
+    assertCanGenerate(snapshot)
     const request = {
       messages: [
         {
@@ -71,19 +211,14 @@ export class ProjectInitializer {
         },
         {
           role: 'user' as const,
-          content: JSON.stringify(snapshot, null, 2),
+          content: input,
         },
       ],
       tools: [],
+      ...(signal ? { signal } : {}),
     }
 
-    let generated = ''
-    for await (const event of this.options.model.stream(request)) {
-      if (event.type === 'text_delta') generated += event.text
-      if (event.type === 'completed' && !generated && event.response.content) generated = event.response.content
-    }
-
-    const content = generated.trim()
+    const content = (await collectModelText(this.options.model, request, '模型没有生成项目上下文')).trim()
     if (!content) throw new Error('模型没有生成项目上下文')
     if (!content.startsWith('#')) throw new Error('模型生成的项目上下文不是有效 Markdown')
     assertSafeGeneratedContent(content)
@@ -105,6 +240,77 @@ export class ProjectInitializer {
     if (!permission.allowed) throw new Error(`权限被拒绝：${permission.reason ?? '当前模式不允许写入'}`)
     return (await this.files).write('PAWCODE.md', content)
   }
+}
+
+interface FullFileReadResult {
+  chunks: ProjectFile[]
+  diagnostic?: string
+}
+
+async function readFullFile(
+  files: WorkspaceFiles,
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<FullFileReadResult> {
+  const chunks: ProjectFile[] = []
+  let startLine = 1
+  let totalBytes = 0
+  let sawContent = false
+
+  try {
+    while (totalBytes < fullMaxFileBytes) {
+      signal?.throwIfAborted()
+      const batch = await files.read(filePath, startLine, 1_000)
+      if (!batch) break
+      if (batch.includes('\u0000')) return { chunks: [], diagnostic: '检测为二进制文件，未读取内容' }
+      sawContent = true
+
+      let current = ''
+      for (const line of batch.split(/\r?\n/)) {
+        const next = current ? `${current}\n${line}` : line
+        if (Buffer.byteLength(next, 'utf8') > fullChunkBytes && current) {
+          chunks.push({ path: filePath, content: current })
+          current = line
+        } else {
+          current = next
+        }
+        totalBytes += Buffer.byteLength(line, 'utf8') + 1
+        if (totalBytes >= fullMaxFileBytes) break
+      }
+      if (current) chunks.push({ path: filePath, content: current })
+
+      const lineCount = batch.split(/\r?\n/).length
+      if (lineCount < 1_000 || totalBytes >= fullMaxFileBytes) break
+      startLine += lineCount
+    }
+  } catch (error) {
+    return { chunks: [], diagnostic: error instanceof Error ? error.message : String(error) }
+  }
+
+  if (!sawContent) return { chunks: [], diagnostic: '空文件，未加入摘要输入' }
+  const content = chunks.map((chunk) => chunk.content).join('\n')
+  if (containsSensitiveContent(content)) return { chunks: [], diagnostic: '内容疑似包含敏感凭据，未加入模型输入' }
+  if (totalBytes >= fullMaxFileBytes) return { chunks, diagnostic: `文件超过 ${fullMaxFileBytes} bytes，已截断` }
+  return { chunks }
+}
+
+function byteLength(files: ProjectFile[]): number {
+  return files.reduce((total, file) => total + Buffer.byteLength(file.content, 'utf8'), 0)
+}
+
+async function collectModelText(model: ModelAdapter, request: ModelRequest, emptyMessage: string): Promise<string> {
+  let generated = ''
+  for await (const event of model.stream(request)) {
+    if (event.type === 'text_delta') generated += event.text
+    if (event.type === 'completed' && !generated && event.response.content) generated = event.response.content
+  }
+  const content = generated.trim()
+  if (!content) throw new Error(emptyMessage)
+  return content
+}
+
+function assertCanGenerate(snapshot: ProjectSnapshot): void {
+  if (snapshot.targetExists) throw new Error('项目根目录已存在 PAWCODE.md，为避免覆盖用户规则，本次未生成文件')
 }
 
 async function selectMetadataFiles(entries: string[], files: WorkspaceFiles): Promise<string[]> {
@@ -239,12 +445,16 @@ function isSensitivePath(value: string): boolean {
 }
 
 function assertSafeGeneratedContent(content: string): void {
+  if (containsSensitiveContent(content)) {
+    throw new Error('生成内容疑似包含敏感凭据，已拒绝写入')
+  }
+}
+
+function containsSensitiveContent(content: string): boolean {
   const suspiciousValue = /(?:api[_-]?key|secret|token|password|credential)\s*[:=]\s*[^\s<`]+/i
   const privateKey = /-----BEGIN [^-]*PRIVATE KEY-----/i
   const knownToken = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,})\b/
-  if (suspiciousValue.test(content) || privateKey.test(content) || knownToken.test(content)) {
-    throw new Error('生成内容疑似包含敏感凭据，已拒绝写入')
-  }
+  return suspiciousValue.test(content) || privateKey.test(content) || knownToken.test(content)
 }
 
 function escapeRegExp(value: string): string {

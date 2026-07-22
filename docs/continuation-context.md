@@ -58,11 +58,11 @@ c66abe8 refactor: split domain types by concept
 - 项目级 `.pawcode/sessions` 会话保存、列表、恢复和工作区校验。
 - Session schema v1、Zod 磁盘校验、`0600` 权限和临时文件原子替换。
 - Claude Code 风格会话入口：`--continue/-c`、`--resume/-r [id|name]`、`--fork-session`、`--name/-n` 和 `--list-sessions`。
-- 交互会话命令：`/init`、`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。`/init` 扫描项目并在权限确认后生成根目录 `PAWCODE.md`，已有文件不会覆盖。
+- 交互会话命令：`/init`、`/init --full`、`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。`/init` 快速扫描项目，`/init --full` 按目录分块摘要大型项目；两者都在权限确认后生成根目录 `PAWCODE.md`，已有文件不会覆盖。
 - 分层 JSON 配置：用户级 `~/.pawcode/config.json`、项目级 `.pawcode/config.json`、本地级 `.pawcode/config.local.json`；API Key 只允许用户级配置，不再读取 `.env`。
 - 项目上下文：支持用户级/项目级 `PAWCODE.md`、兼容 `AGENTS.md`、`--show-context [path]` 和路径规则。
 - 动态上下文：工具声明目标路径，Runtime 在工具执行前刷新对应目录上下文；上下文变化只影响后续模型请求，不写入会话历史。
-- `/init` 项目初始化：通过 `ProjectInitializer` 扫描项目、应用默认忽略规则和 `.gitignore`，使用候选评分发现元数据，过滤敏感文件，经权限确认后生成根目录 `PAWCODE.md`。
+- `/init` 项目初始化：通过 `ProjectInitializer` 扫描项目、应用默认忽略规则和 `.gitignore`，使用候选评分发现元数据，过滤敏感文件，经权限确认后生成根目录 `PAWCODE.md`；`/init --full` 增加完整文件索引、目录分块和逐块摘要汇总。
 - 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，普通输入态 `Esc` 清空输入。公共可取消选择器让 `/resume` 中的 `Esc` 返回原会话输入提示，也让启动参数 `pawcode --resume` 中的 `Esc` 正常返回 shell。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
 - `--json` 严格 NDJSON；stdout 不混入人类装饰输出，非交互副作用默认拒绝。
@@ -73,7 +73,7 @@ c66abe8 refactor: split domain types by concept
 - v0.4.1：会话、`write_file` 和 `apply_patch` 使用同目录临时文件、`fsync` 和原子替换。
 - v0.4.1：权限确认响应 Esc/Ctrl+C 的 AbortSignal，stdout `EPIPE` 正常退出。
 
-设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md) 和 [v0.5-init-design.md](./v0.5-init-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
+设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md)、[v0.5-init-design.md](./v0.5-init-design.md) 和 [v0.5-init-full-design.md](./v0.5-init-full-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
 
 ## 必须保持的架构边界
 
@@ -356,7 +356,7 @@ pnpm dev --list-sessions
 pnpm dev --json "检查项目"
 ```
 
-进入交互模式后输入 `/init` 可生成项目根目录 `PAWCODE.md`；已有文件默认不覆盖。`/init` 当前仅支持交互模式，不支持 JSON 或单次 prompt 模式。
+进入交互模式后输入 `/init` 或 `/init --full` 可生成项目根目录 `PAWCODE.md`；已有文件默认不覆盖。两个命令当前仅支持交互模式，不支持 JSON 或单次 prompt 模式。
 
 交互模式会询问副作用权限。单次非交互模式必须通过 `--allow-write` 或可重复的 `--allow-command <prefix>` 显式授权。
 
@@ -365,8 +365,8 @@ pnpm dev --json "检查项目"
 `f4c0e31` 完成后：
 
 - Prettier、TypeScript 类型检查和构建通过。
-- 22 个测试文件、82 个测试通过。
-- 覆盖分层配置、静态/动态上下文、路径规则、`/init` 扫描、`.gitignore`、敏感文件过滤和已有 `PAWCODE.md` 保护。
+- 22 个测试文件、83 个测试通过。
+- 覆盖分层配置、静态/动态上下文、路径规则、快速/完整 `/init` 扫描、分块摘要、`.gitignore`、敏感文件过滤和已有 `PAWCODE.md` 保护。
 - `git diff --check` 通过。
 - 构建后的 CLI 已验证 `--show-config --json` 和 `--show-context [path]` 输出合法 NDJSON。
 
@@ -405,11 +405,10 @@ v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用
 
 后续补强：
 
-1. 增加 `/init --full` 或等价的分块摘要模式，支持大型仓库的更完整分析。
-2. 为上下文扫描增加可见诊断，列出截断、跳过和未读取的文件及原因。
-3. 完善 `.gitignore` 复杂语义和符号链接场景的测试；必要时复用 Git 的路径匹配能力。
-4. 支持已有 `PAWCODE.md` 的安全更新模式，只修改 PawCode 管理区域，不覆盖用户手写规则。
-5. 增加 `/memory` 或上下文来源检查界面，方便用户查看当前生效的指令文件。
+1. 为快速和完整 `/init` 增加统一的可见诊断，列出截断、跳过和未读取的文件及原因。
+2. 完善 `.gitignore` 复杂语义和符号链接场景的测试；必要时复用 Git 的路径匹配能力。
+3. 支持已有 `PAWCODE.md` 的安全更新模式，只修改 PawCode 管理区域，不覆盖用户手写规则。
+4. 增加 `/memory` 或上下文来源检查界面，方便用户查看当前生效的指令文件。
 
 ### v0.5.1：MCP Client
 

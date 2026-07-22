@@ -39,7 +39,7 @@ import { ReadFileTool } from './tools/read-file-tool.js'
 import { RunCommandTool } from './tools/run-command-tool.js'
 import { ToolRegistry } from './tools/tool-registry.js'
 import { WriteFileTool } from './tools/write-file-tool.js'
-import { ProjectInitializer } from './project/project-initializer.js'
+import { ProjectInitializer, type ProjectInitEvent } from './project/project-initializer.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -399,8 +399,8 @@ async function runInteractive(
         )
         continue
       }
-      if (input === '/init') {
-        await runProjectInit(bundle.modelAdapter, permissionManager, signalState)
+      if (input === '/init' || input === '/init --full') {
+        await runProjectInit(bundle.modelAdapter, permissionManager, signalState, input === '/init --full')
         continue
       }
       if (input === '/sessions') {
@@ -526,32 +526,54 @@ async function runProjectInit(
   model: ModelAdapter,
   permissionManager: PermissionManager,
   signalState: InteractiveSignalState,
+  full = false,
 ): Promise<void> {
-  let controller: AbortController | undefined
+  const controller = signalState.beginRun()
   try {
     const initializer = new ProjectInitializer({
       workspace: process.cwd(),
       model,
       permissionManager,
     })
-    const snapshot = await initializer.inspect()
+    const snapshot = await initializer.inspect(full ? 'full' : 'quick', controller.signal)
     if (snapshot.targetExists) {
       console.log('\n项目根目录已存在 PAWCODE.md，本次未覆盖。\n')
       return
     }
 
-    console.log('\n正在分析项目并生成 PAWCODE.md...')
-    controller = signalState.beginRun()
-    const content = await initializer.generate(snapshot)
+    console.log(`\n正在${full ? '完整分析项目并生成' : '分析项目并生成'} PAWCODE.md...`)
+    const content = full
+      ? await initializer.generateFull(snapshot, (event) => renderProjectInitEvent(event), controller.signal)
+      : await initializer.generate(snapshot)
     const preview = content.length > 1_500 ? `${content.slice(0, 1_500)}\n...` : content
     console.log(`\n生成预览：\n${preview}`)
     const result = await initializer.write(content, controller.signal)
     console.log(`\n${result}\n`)
   } catch (error) {
+    if (controller.signal.aborted) {
+      console.log('\n已取消 /init，未写入项目上下文。\n')
+      return
+    }
     if (signalState.shouldExit()) return
     console.error(`\n/init 失败：${error instanceof Error ? error.message : String(error)}\n`)
   } finally {
-    if (controller) signalState.endRun()
+    signalState.endRun()
+  }
+}
+
+function renderProjectInitEvent(event: ProjectInitEvent): void {
+  switch (event.type) {
+    case 'init_scan_started':
+      console.log(`扫描项目：${event.fileCount} 个文件进入完整分析`)
+      return
+    case 'init_chunk_completed':
+      console.log(`生成摘要：${event.completed}/${event.total}（${event.chunkId}）`)
+      return
+    case 'init_chunk_failed':
+      console.error(`摘要失败：${event.chunkId}（${event.reason}）`)
+      return
+    case 'init_generation_completed':
+      console.log(`摘要完成：${event.completedChunks} 个成功，${event.failedChunks} 个失败`)
   }
 }
 

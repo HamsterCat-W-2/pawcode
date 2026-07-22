@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import type { ModelRequest } from '../src/domain/model.js'
 import type { ModelAdapter } from '../src/models/model-adapter.js'
 import type { ModelEvent } from '../src/models/model-event.js'
 import type { ModelResponse } from '../src/domain/model.js'
@@ -11,9 +12,12 @@ import { ProjectInitializer } from '../src/project/project-initializer.js'
 const temporaryDirectories: string[] = []
 
 class FixedModel implements ModelAdapter {
+  readonly requests: ModelRequest[] = []
+
   constructor(private readonly response: ModelResponse) {}
 
-  async *stream(): AsyncGenerator<ModelEvent> {
+  async *stream(request: ModelRequest): AsyncGenerator<ModelEvent> {
+    this.requests.push(request)
     yield { type: 'completed', response: this.response }
   }
 }
@@ -98,6 +102,28 @@ describe('ProjectInitializer', () => {
     })
 
     await expect(initializer.generate(await initializer.inspect())).rejects.toThrow('敏感凭据')
+  })
+
+  it('完整模式按目录构建分块，逐块摘要后再生成最终文档', async () => {
+    const root = await fixture()
+    await mkdir(path.join(root, 'src/deep/module'), { recursive: true })
+    await writeFile(path.join(root, 'src/deep/module/index.ts'), 'export const value = 1')
+    await writeFile(path.join(root, 'README.md'), '# Demo')
+    const model = new FixedModel({ content: '# 摘要', toolCalls: [] })
+    const initializer = new ProjectInitializer({
+      workspace: root,
+      model,
+      permissionManager: new PermissionManager({ allowWrite: true }),
+    })
+
+    const snapshot = await initializer.inspect('full')
+    const generated = await initializer.generateFull(snapshot)
+
+    expect(snapshot.chunks?.some((chunk) => chunk.files.some((file) => file.path.includes('src/deep/module')))).toBe(
+      true,
+    )
+    expect(generated).toBe('# 摘要\n')
+    expect(model.requests.length).toBe((snapshot.chunks?.length ?? 0) + 1)
   })
 })
 
