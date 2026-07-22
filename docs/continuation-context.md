@@ -60,11 +60,12 @@ c66abe8 refactor: split domain types by concept
 - 项目级 `.pawcode/sessions` 会话保存、列表、恢复和工作区校验。
 - Session schema v1、Zod 磁盘校验、`0600` 权限和临时文件原子替换。
 - Claude Code 风格会话入口：`--continue/-c`、`--resume/-r [id|name]`、`--fork-session`、`--name/-n` 和 `--list-sessions`。
-- 交互会话命令：`/init`、`/init --full`、`/init --update`、`/init --full --update`、`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。`/init` 快速扫描项目，`/init --full` 按目录分块摘要大型项目；普通模式已有文件不会覆盖，显式 `--update` 只更新 `PAWCODE.md` 的唯一 PawCode 管理区。
+- 交互会话命令：`/init`、`/init --full`、`/init --update`、`/init --full --update`、`/memory`、`/memory add`、`/memory remove`、`/memory clear`、`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。`/init` 快速扫描项目，`/init --full` 按目录分块摘要大型项目；普通模式已有文件不会覆盖，显式 `--update` 只更新 `PAWCODE.md` 的唯一 PawCode 管理区。
 - 分层 JSON 配置：用户级 `~/.pawcode/config.json`、项目级 `.pawcode/config.json`、本地级 `.pawcode/config.local.json`；API Key 只允许用户级配置，不再读取 `.env`。
 - 项目上下文：支持用户级/项目级 `PAWCODE.md`、兼容 `AGENTS.md`、`--show-context [path]` 和路径规则。
 - 动态上下文：工具声明目标路径，Runtime 在工具执行前刷新对应目录上下文；上下文变化只影响后续模型请求，不写入会话历史。
 - `/init` 项目初始化：通过 `ProjectInitializer` 扫描项目、应用默认忽略规则和 `.gitignore`，使用候选评分发现元数据，过滤敏感文件，经权限确认后生成根目录 `PAWCODE.md`；`/init --full` 增加完整文件索引、目录分块和逐块摘要汇总；`--update` 只替换管理区并展示变更预览。
+- 持久化记忆：用户级 `~/.pawcode/memory.json` 和项目级 `.pawcode/memory.json`，通过上下文解析器注入 system prompt；`/memory` 支持查看、添加、删除和清空，记忆不会进入 Session 历史。
 - 启动性能：模型与工具按需加载，动态上下文提供器延迟到首次工具调用前创建，会话恢复扫描单次读取；`--verbose-startup` 可输出启动阶段耗时。
 - 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，普通输入态 `Esc` 清空输入。公共可取消选择器让 `/resume` 中的 `Esc` 返回原会话输入提示，也让启动参数 `pawcode --resume` 中的 `Esc` 正常返回 shell。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
@@ -365,10 +366,10 @@ pnpm dev --json "检查项目"
 
 ## 当前验证基线
 
-`cdbf57b` 及当前 `/init` 安全更新修改完成后：
+`cdbf57b` 及当前持久化记忆修改完成后：
 
 - Prettier、TypeScript 类型检查和构建通过。
-- 22 个测试文件、89 个测试通过。
+- 23 个测试文件、92 个测试通过。
 - 覆盖分层配置、静态/动态上下文、路径规则、快速/完整 `/init` 扫描、分块摘要、`.gitignore`、敏感文件过滤和已有 `PAWCODE.md` 保护。
 - `git diff --check` 通过。
 - 构建后的 CLI 已验证 `--show-config --json` 和 `--show-context [path]` 输出合法 NDJSON。
@@ -413,11 +414,12 @@ v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用
 1. 为快速和完整 `/init` 增加统一的可见诊断，列出截断、跳过和未读取的文件及原因（见 `docs/v0.5-init-diagnostics-design.md`）。
 2. 完善 `.gitignore` 复杂 glob、反选、转义字符和目录规则测试；补充工作区内外符号链接测试（见 `docs/v0.5-init-ignore-safety-design.md`）。
 3. 支持 `/init --update` 和 `/init --full --update`，仅替换唯一 PawCode 管理区，保留用户内容并展示变更预览（见 `docs/v0.5-init-update-design.md`）。
+4. 实现用户级和项目级持久化记忆、`/memory` 命令及敏感内容过滤（见 `docs/v0.5-persistent-memory-design.md`）。
 
 后续补强：
 
-1. 支持已有 `PAWCODE.md` 的安全更新模式，只修改 PawCode 管理区域，不覆盖用户手写规则。
-2. 增加 `/memory` 或上下文来源检查界面，方便用户查看当前生效的指令文件。
+1. 为持久化记忆增加更细的编辑预览、记忆优先级和冲突处理。
+2. 进入 `v0.5.1 MCP Client`，先实现 stdio 工具发现和现有 `ToolRegistry` 映射。
 
 ### v0.5.1：MCP Client
 

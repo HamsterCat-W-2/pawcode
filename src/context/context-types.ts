@@ -1,5 +1,5 @@
 export interface ContextSource {
-  kind: 'user' | 'project' | 'local'
+  kind: 'user' | 'project' | 'local' | 'memory-user' | 'memory-project'
   path: string
   relativePath?: string
   bytes: number

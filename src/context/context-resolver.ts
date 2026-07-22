@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { PawCodeConfig } from '../config/config.js'
+import { PersistentMemoryStore, type MemoryReadResult } from '../memory/memory-store.js'
 import type { ContextSource, ResolvedContext } from './context-types.js'
 
 interface ResolveContextOptions {
@@ -42,6 +43,9 @@ export async function resolveContext(
     config,
     diagnostics,
   )
+  const memoryStore = PersistentMemoryStore.create(root, home)
+  const userMemory = await memoryStore.read('user')
+  appendMemory(userMemory, loaded, diagnostics)
 
   const requestedTargets = options.targetPaths ?? (options.targetPath ? [options.targetPath] : [undefined])
   const resolvedTargets: Array<string | undefined> = []
@@ -92,6 +96,8 @@ export async function resolveContext(
       diagnostics,
     )
   }
+  const projectMemory = await memoryStore.read('project')
+  appendMemory(projectMemory, loaded, diagnostics)
 
   const matchingRules = resolvedTargets.flatMap((target) => {
     const relativeTarget = target ? relativePath(root, target) : ''
@@ -107,7 +113,11 @@ export async function resolveContext(
   const disabledTools = [...new Set(matchingRules.flatMap(({ rule }) => rule.disabledTools))]
   const sections = [
     baseSystemPrompt,
-    ...loaded.map((entry) => `【项目上下文：${entry.source.path}】\n${entry.content}`),
+    ...loaded.map((entry) =>
+      entry.source.kind === 'memory-user' || entry.source.kind === 'memory-project'
+        ? `【持久化记忆：${entry.source.kind === 'memory-user' ? '用户级' : '项目级'}】\n${entry.content}`
+        : `【项目上下文：${entry.source.path}】\n${entry.content}`,
+    ),
     config.context.appendSystemPrompt,
     ...ruleInstructions,
   ].filter(Boolean)
@@ -162,6 +172,25 @@ async function loadInstruction(
     if (!isMissingPathError(error))
       diagnostics.push(`上下文文件读取失败：${resolved}：${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+function appendMemory(result: MemoryReadResult, loaded: LoadedInstruction[], diagnostics: string[]): void {
+  if (result.diagnostic) {
+    diagnostics.push(result.diagnostic)
+    return
+  }
+  if (result.entries.length === 0) return
+  const content = result.entries.map((entry) => `- [${entry.id}] ${entry.content}`).join('\n')
+  loaded.push({
+    source: {
+      kind: result.scope === 'user' ? 'memory-user' : 'memory-project',
+      path: result.path,
+      bytes: Buffer.byteLength(content, 'utf8'),
+      hash: createHash('sha256').update(content).digest('hex'),
+      enabled: true,
+    },
+    content,
+  })
 }
 
 async function resolveTarget(

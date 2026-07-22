@@ -30,6 +30,7 @@ import { SessionManager } from './sessions/session-manager.js'
 import type { SessionSummary } from './sessions/session-schema.js'
 import { SessionStore } from './sessions/session-store.js'
 import type { ProjectInitEvent, ProjectSnapshot } from './project/project-initializer.js'
+import { PersistentMemoryStore, type MemoryScope } from './memory/memory-store.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -436,6 +437,10 @@ async function runInteractive(
         await runProjectInit(bundle.modelAdapter, permissionManager, signalState, initCommand.full, initCommand.update)
         continue
       }
+      if (input === '/memory' || input.startsWith('/memory ')) {
+        await runMemoryCommand(input, permissionManager)
+        continue
+      }
       if (input === '/sessions') {
         renderSessions(await store.list(), false)
         continue
@@ -620,6 +625,83 @@ function parseProjectInitCommand(input: string): { full: boolean; update: boolea
   const flags = new Set(parts.slice(1))
   if ([...flags].some((flag) => flag !== '--full' && flag !== '--update')) return undefined
   return { full: flags.has('--full'), update: flags.has('--update') }
+}
+
+type MemoryCommand =
+  | { type: 'list' }
+  | { type: 'add'; scope: MemoryScope; content: string }
+  | { type: 'remove'; scope: MemoryScope; id: string }
+  | { type: 'clear'; scope: MemoryScope }
+
+function parseMemoryCommand(input: string): MemoryCommand | undefined {
+  const parts = input.split(/\s+/)
+  const action = parts[1]
+  if (!action) return { type: 'list' }
+  const scope: MemoryScope = parts.includes('--user') ? 'user' : 'project'
+  if (action === 'add') {
+    const content = parts
+      .slice(2)
+      .filter((part) => part !== '--user' && part !== '--project')
+      .join(' ')
+    return { type: 'add', scope, content }
+  }
+  if (action === 'remove')
+    return { type: 'remove', scope, id: parts.find((part) => !part.startsWith('--') && part !== 'remove') ?? '' }
+  if (action === 'clear') return { type: 'clear', scope }
+  return undefined
+}
+
+async function runMemoryCommand(input: string, permissionManager: PermissionManager): Promise<void> {
+  const command = parseMemoryCommand(input)
+  if (!command) {
+    console.log(
+      '\n用法：/memory | /memory add [--user|--project] <内容> | /memory remove <id> [--user] | /memory clear [--user|--project]\n',
+    )
+    return
+  }
+  const store = PersistentMemoryStore.create(process.cwd())
+  try {
+    if (command.type === 'list') {
+      const results = await store.list()
+      console.log('\n持久化记忆：')
+      for (const result of results) {
+        console.log(`\n[${result.scope === 'user' ? '用户级' : '项目级'}] ${result.path}`)
+        if (result.diagnostic) {
+          console.log(`- ${result.diagnostic}`)
+          continue
+        }
+        if (result.entries.length === 0) console.log('- 暂无记忆')
+        for (const entry of result.entries) console.log(`- ${entry.id}：${entry.content}`)
+      }
+      console.log()
+      return
+    }
+
+    const description =
+      command.type === 'add' ? '添加持久化记忆' : command.type === 'remove' ? '删除持久化记忆' : '清空持久化记忆'
+    const permission = await permissionManager.authorize({
+      capability: 'write',
+      tool: 'memory',
+      description,
+      resource: `${command.scope} memory`,
+    })
+    if (!permission.allowed) {
+      console.log(`\n记忆操作未执行：${permission.reason ?? '权限被拒绝'}\n`)
+      return
+    }
+    if (command.type === 'add') {
+      const entry = await store.add(command.scope, command.content)
+      console.log(`\n已添加${command.scope === 'user' ? '用户级' : '项目级'}记忆：${entry.id}\n`)
+    } else if (command.type === 'remove') {
+      await store.remove(command.scope, command.id)
+      console.log(`\n已删除记忆：${command.id}\n`)
+    } else {
+      await store.clear(command.scope)
+      console.log(`\n已清空${command.scope === 'user' ? '用户级' : '项目级'}记忆。\n`)
+    }
+  } catch (error) {
+    console.error(`\n记忆操作失败：${error instanceof Error ? error.message : String(error)}\n`)
+  }
 }
 
 function renderProjectUpdateDiff(current: string, updated: string): void {
