@@ -13,6 +13,8 @@ const fullMaxFiles = 2_000
 const fullMaxFileBytes = 256 * 1024
 const fullChunkBytes = 48 * 1024
 const fullMaxChunks = 128
+const managedStart = '<!-- pawcode:managed:start -->'
+const managedEnd = '<!-- pawcode:managed:end -->'
 
 export type ProjectInitEvent =
   | { type: 'init_scan_started'; fileCount: number; chunkCount: number; diagnostics: ProjectDiagnostic[] }
@@ -53,6 +55,11 @@ export interface ProjectSnapshot {
   chunks?: ProjectChunk[]
   diagnostics?: ProjectDiagnostic[]
   stats: ProjectScanStats
+}
+
+export interface ProjectUpdate {
+  current: string
+  updated: string
 }
 
 export interface ProjectInitializerOptions {
@@ -143,12 +150,34 @@ export class ProjectInitializer {
     return this.generateFromInput(snapshot, JSON.stringify(snapshot, null, 2))
   }
 
+  async generateUpdate(
+    snapshot: ProjectSnapshot,
+    full = false,
+    onEvent?: (event: ProjectInitEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<ProjectUpdate> {
+    if (!snapshot.targetExists) throw new Error('当前项目没有 PAWCODE.md，不能执行安全更新')
+    const current = await (await this.files).readRaw('PAWCODE.md')
+    const content = full
+      ? await this.generateFullContent(snapshot, onEvent, signal)
+      : await this.generateFromInput(snapshot, JSON.stringify(snapshot, null, 2), signal)
+    return { current, updated: replaceManagedContent(current, content) }
+  }
+
   async generateFull(
     snapshot: ProjectSnapshot,
     onEvent?: (event: ProjectInitEvent) => void,
     signal?: AbortSignal,
   ): Promise<string> {
     assertCanGenerate(snapshot)
+    return this.generateFullContent(snapshot, onEvent, signal)
+  }
+
+  private async generateFullContent(
+    snapshot: ProjectSnapshot,
+    onEvent?: (event: ProjectInitEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<string> {
     const chunks = snapshot.chunks ?? []
     const summaries: Array<{ chunkId: string; summary: string }> = []
     let failedChunks = 0
@@ -271,7 +300,6 @@ export class ProjectInitializer {
   }
 
   private async generateFromInput(snapshot: ProjectSnapshot, input: string, signal?: AbortSignal): Promise<string> {
-    assertCanGenerate(snapshot)
     const request = {
       messages: [
         {
@@ -308,7 +336,57 @@ export class ProjectInitializer {
       signal,
     )
     if (!permission.allowed) throw new Error(`权限被拒绝：${permission.reason ?? '当前模式不允许写入'}`)
+    return (await this.files).write('PAWCODE.md', wrapManagedContent(content))
+  }
+
+  async writeUpdated(content: string, signal?: AbortSignal): Promise<string> {
+    if (!hasSingleManagedSection(content)) throw new Error('拒绝写入缺少唯一 PawCode 管理区的内容')
+    const permission = await this.options.permissionManager.authorize(
+      {
+        capability: 'write',
+        tool: 'init_update',
+        description: '更新项目上下文文件 PAWCODE.md 的 PawCode 管理区',
+        resource: 'PAWCODE.md',
+      },
+      signal,
+    )
+    if (!permission.allowed) throw new Error(`权限被拒绝：${permission.reason ?? '当前模式不允许写入'}`)
     return (await this.files).write('PAWCODE.md', content)
+  }
+}
+
+function wrapManagedContent(content: string): string {
+  return `${managedStart}\n${content.trimEnd()}\n${managedEnd}\n`
+}
+
+function replaceManagedContent(current: string, generated: string): string {
+  const startIndex = current.indexOf(managedStart)
+  const endIndex = current.indexOf(managedEnd)
+  if (!hasSingleManagedSection(current) || endIndex < startIndex) {
+    throw new Error('PAWCODE.md 缺少唯一的 PawCode 管理区，已拒绝更新')
+  }
+  const replacement = wrapManagedContent(generated)
+  const before = current.slice(0, startIndex)
+  const after = current.slice(endIndex + managedEnd.length).replace(/^\r?\n/, '')
+  return `${before}${replacement}${after}`
+}
+
+function hasSingleManagedSection(content: string): boolean {
+  return (
+    countOccurrences(content, managedStart) === 1 &&
+    countOccurrences(content, managedEnd) === 1 &&
+    content.indexOf(managedStart) < content.indexOf(managedEnd)
+  )
+}
+
+function countOccurrences(content: string, value: string): number {
+  let count = 0
+  let offset = 0
+  while (true) {
+    const index = content.indexOf(value, offset)
+    if (index < 0) return count
+    count += 1
+    offset = index + value.length
   }
 }
 

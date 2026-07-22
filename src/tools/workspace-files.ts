@@ -44,6 +44,15 @@ export class WorkspaceFiles {
       .join('\n')
   }
 
+  async readRaw(relativePath: string): Promise<string> {
+    const target = await this.resolve(relativePath)
+    const info = await stat(target)
+    if (!info.isFile()) throw new Error('目标不是文件')
+    if (info.size > 2_000_000) throw new Error('文件超过 2MB，拒绝读取')
+    // 更新管理区必须保留用户原文和换行格式，不能复用带行号的 read()。
+    return readFile(target, 'utf8')
+  }
+
   async write(relativePath: string, content: string): Promise<string> {
     assertContentSize(content)
     const target = await this.resolveForWrite(relativePath)

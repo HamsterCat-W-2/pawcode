@@ -431,8 +431,9 @@ async function runInteractive(
         )
         continue
       }
-      if (input === '/init' || input === '/init --full') {
-        await runProjectInit(bundle.modelAdapter, permissionManager, signalState, input === '/init --full')
+      const initCommand = parseProjectInitCommand(input)
+      if (initCommand) {
+        await runProjectInit(bundle.modelAdapter, permissionManager, signalState, initCommand.full, initCommand.update)
         continue
       }
       if (input === '/sessions') {
@@ -559,6 +560,7 @@ async function runProjectInit(
   permissionManager: PermissionManager,
   signalState: InteractiveSignalState,
   full = false,
+  update = false,
 ): Promise<void> {
   const controller = signalState.beginRun()
   try {
@@ -570,13 +572,29 @@ async function runProjectInit(
       permissionManager,
     })
     const snapshot = await initializer.inspect(full ? 'full' : 'quick', controller.signal)
-    if (snapshot.targetExists) {
+    if (snapshot.targetExists && !update) {
       console.log('\n项目根目录已存在 PAWCODE.md，本次未覆盖。\n')
+      return
+    }
+    if (update && !snapshot.targetExists) {
+      console.log('\n项目根目录不存在 PAWCODE.md，无法执行安全更新；请先运行 /init。\n')
       return
     }
 
     renderProjectInitDiagnostics(snapshot)
-    console.log(`\n正在${full ? '完整分析项目并生成' : '分析项目并生成'} PAWCODE.md...`)
+    console.log(`\n正在${full ? '完整分析项目并' : ''}${update ? '更新' : '生成'} PAWCODE.md...`)
+    if (update) {
+      const result = await initializer.generateUpdate(
+        snapshot,
+        full,
+        (event) => renderProjectInitEvent(event),
+        controller.signal,
+      )
+      renderProjectUpdateDiff(result.current, result.updated)
+      const writeResult = await initializer.writeUpdated(result.updated, controller.signal)
+      console.log(`\n${writeResult}\n`)
+      return
+    }
     const content = full
       ? await initializer.generateFull(snapshot, (event) => renderProjectInitEvent(event), controller.signal)
       : await initializer.generate(snapshot)
@@ -594,6 +612,35 @@ async function runProjectInit(
   } finally {
     signalState.endRun()
   }
+}
+
+function parseProjectInitCommand(input: string): { full: boolean; update: boolean } | undefined {
+  const parts = input.split(/\s+/)
+  if (parts[0] !== '/init' || parts.length > 3) return undefined
+  const flags = new Set(parts.slice(1))
+  if ([...flags].some((flag) => flag !== '--full' && flag !== '--update')) return undefined
+  return { full: flags.has('--full'), update: flags.has('--update') }
+}
+
+function renderProjectUpdateDiff(current: string, updated: string): void {
+  const oldLines = current.split(/\r?\n/)
+  const newLines = updated.split(/\r?\n/)
+  let prefix = 0
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1
+  let suffix = 0
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix += 1
+  }
+  const removed = oldLines.slice(prefix, oldLines.length - suffix)
+  const added = newLines.slice(prefix, newLines.length - suffix)
+  console.log(`\n更新预览：-${removed.length} 行，+${added.length} 行`)
+  for (const line of removed.slice(0, 80)) console.log(`- ${line}`)
+  for (const line of added.slice(0, 80)) console.log(`+ ${line}`)
+  if (removed.length > 80 || added.length > 80) console.log('... 其余变更未展开')
 }
 
 function printStartupReport(profiler: StartupProfiler): void {

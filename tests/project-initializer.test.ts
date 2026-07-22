@@ -106,7 +106,9 @@ describe('ProjectInitializer', () => {
     const generated = await initializer.generate(await initializer.inspect())
     await initializer.write(generated)
 
-    await expect(readFile(path.join(root, 'PAWCODE.md'), 'utf8')).resolves.toBe(content)
+    await expect(readFile(path.join(root, 'PAWCODE.md'), 'utf8')).resolves.toBe(
+      `<!-- pawcode:managed:start -->\n${content.trimEnd()}\n<!-- pawcode:managed:end -->\n`,
+    )
   })
 
   it('已有 PAWCODE.md 时拒绝生成，避免覆盖用户规则', async () => {
@@ -115,6 +117,37 @@ describe('ProjectInitializer', () => {
     const initializer = createInitializer(root)
 
     await expect(initializer.generate(await initializer.inspect())).rejects.toThrow('已存在 PAWCODE.md')
+  })
+
+  it('更新时只替换管理区并保留用户手写内容', async () => {
+    const root = await fixture()
+    const before =
+      '# 用户说明\n\n<!-- pawcode:managed:start -->\n旧自动内容\n<!-- pawcode:managed:end -->\n\n## 用户约定\n'
+    await writeFile(path.join(root, 'PAWCODE.md'), before)
+    const initializer = createInitializer(root)
+    const update = await initializer.generateUpdate(await initializer.inspect())
+
+    expect(update.current).toBe(before)
+    expect(update.updated).toContain('# 用户说明')
+    expect(update.updated).toContain('## 用户约定')
+    expect(update.updated).toContain('# Demo')
+    expect(update.updated).not.toContain('旧自动内容')
+
+    await initializer.writeUpdated(update.updated)
+    await expect(readFile(path.join(root, 'PAWCODE.md'), 'utf8')).resolves.toBe(update.updated)
+  })
+
+  it('管理区缺失或重复时拒绝更新', async () => {
+    const root = await fixture()
+    await writeFile(path.join(root, 'PAWCODE.md'), '# 用户手写内容')
+    const initializer = createInitializer(root)
+    await expect(initializer.generateUpdate(await initializer.inspect())).rejects.toThrow('缺少唯一')
+
+    await writeFile(
+      path.join(root, 'PAWCODE.md'),
+      '<!-- pawcode:managed:start -->\none\n<!-- pawcode:managed:end -->\n<!-- pawcode:managed:start -->\ntwo\n<!-- pawcode:managed:end -->\n',
+    )
+    await expect(initializer.generateUpdate(await initializer.inspect())).rejects.toThrow('缺少唯一')
   })
 
   it('生成结果疑似包含凭据时拒绝写入', async () => {
