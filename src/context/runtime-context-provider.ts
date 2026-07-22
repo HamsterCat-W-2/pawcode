@@ -24,6 +24,45 @@ export interface RuntimeContextProvider {
   ): Promise<ContextDecision>
 }
 
+/**
+ * 先提供启动快照，第一次工具调用前才实例化动态解析器。
+ * 这样检查配置、显示上下文和进入交互提示都不会提前创建运行时上下文对象。
+ */
+export class DeferredContextProvider implements RuntimeContextProvider {
+  private provider: RuntimeContextProvider | undefined
+  private creating: Promise<RuntimeContextProvider> | undefined
+
+  constructor(
+    private readonly initialContext: ResolvedContext,
+    private readonly createProvider: (context: ResolvedContext) => Promise<RuntimeContextProvider>,
+  ) {}
+
+  initial(): ResolvedContext {
+    return this.current()
+  }
+
+  current(): ResolvedContext {
+    return this.provider?.current() ?? structuredClone(this.initialContext)
+  }
+
+  async beforeToolCall(
+    toolName: string,
+    argumentsJson: string,
+    toolContext: ToolContext,
+    targets: ContextTarget[],
+  ): Promise<ContextDecision> {
+    const provider = await this.getProvider()
+    return provider.beforeToolCall(toolName, argumentsJson, toolContext, targets)
+  }
+
+  private async getProvider(): Promise<RuntimeContextProvider> {
+    if (this.provider) return this.provider
+    this.creating ??= this.createProvider(this.initialContext)
+    this.provider = await this.creating
+    return this.provider
+  }
+}
+
 export class DynamicContextProvider implements RuntimeContextProvider {
   private constructor(
     private readonly workspace: string,
@@ -37,8 +76,11 @@ export class DynamicContextProvider implements RuntimeContextProvider {
     workspace: string,
     config: PawCodeConfig,
     baseSystemPrompt: string,
+    initialContext?: ResolvedContext,
   ): Promise<DynamicContextProvider> {
-    const context = await resolveContext(workspace, config, baseSystemPrompt, { targetPaths: ['.'] })
+    // CLI 启动时已经解析过根上下文；复用快照可以避免同一工作区启动阶段重复读盘。
+    const context =
+      initialContext ?? (await resolveContext(workspace, config, baseSystemPrompt, { targetPaths: ['.'] }))
     return new DynamicContextProvider(workspace, config, baseSystemPrompt, context, fingerprint(context, ['.'], config))
   }
 

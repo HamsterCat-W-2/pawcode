@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../src/config/config.js'
-import { DynamicContextProvider } from '../src/context/runtime-context-provider.js'
+import { resolveContext } from '../src/context/context-resolver.js'
+import { DeferredContextProvider, DynamicContextProvider } from '../src/context/runtime-context-provider.js'
 
 const temporaryDirectories: string[] = []
 
@@ -75,6 +76,35 @@ describe('动态运行时上下文', () => {
 
     expect(decision.disabled).toBe(true)
     expect(decision.context.disabledTools).toEqual(['run_command'])
+  })
+
+  it('可以复用启动时的初始上下文，避免再次读取根上下文文件', async () => {
+    const root = await fixture()
+    await writeFile(path.join(root, 'PAWCODE.md'), '启动时读取的规则')
+    const config = loadConfig({ model: { name: 'test-model' } })
+    const initial = await resolveContext(root, config, '基础规则')
+    await rm(path.join(root, 'PAWCODE.md'))
+
+    const provider = await DynamicContextProvider.create(root, config, '基础规则', initial)
+
+    expect(provider.initial().systemPrompt).toContain('启动时读取的规则')
+  })
+
+  it('只在第一次工具调用前创建动态提供器', async () => {
+    const root = await fixture()
+    const initial = await resolveContext(root, loadConfig({ model: { name: 'test-model' } }), '基础规则')
+    let creations = 0
+    const deferred = new DeferredContextProvider(initial, async (context) => {
+      creations += 1
+      return DynamicContextProvider.create(root, loadConfig({ model: { name: 'test-model' } }), '基础规则', context)
+    })
+
+    expect(creations).toBe(0)
+    expect(deferred.current().systemPrompt).toContain('基础规则')
+    expect(creations).toBe(0)
+
+    await deferred.beforeToolCall('read_file', '{}', { workspace: root, maxOutputChars: 1_000 }, [])
+    expect(creations).toBe(1)
   })
 })
 

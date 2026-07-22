@@ -101,10 +101,23 @@ export class SessionStore {
   }
 
   async recoverInterruptedSessions(isProcessAlive: (processId: number) => boolean = processIsAlive): Promise<number> {
-    const running = (await this.list()).filter((session) => session.lastRunStatus === 'running')
+    const entries = await readdir(this.sessionsDirectory, { withFileTypes: true })
+    const records = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+        .map(async (entry) => {
+          const id = entry.name.slice(0, -'.json'.length)
+          try {
+            // 恢复扫描直接读取完整记录，避免 list() 后对 running 会话再次读盘。
+            return await this.load(id)
+          } catch {
+            return undefined
+          }
+        }),
+    )
     let recovered = 0
-    for (const summary of running) {
-      const record = await this.load(summary.id)
+    for (const record of records) {
+      if (!record || record.lastRunStatus !== 'running') continue
       // 允许同一项目同时运行多个 PawCode；只有进程不存在或旧记录没有 PID 时才判定为异常中断。
       if (record.activeProcessId && isProcessAlive(record.activeProcessId)) continue
       record.lastRunStatus = 'interrupted'

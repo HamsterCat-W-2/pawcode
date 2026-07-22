@@ -10,14 +10,12 @@ import { loadConfig, type PawCodeConfig } from './config/config.js'
 import { loadConfigFiles, type LoadedConfigFile } from './config/config-loader.js'
 import { resolveContext } from './context/context-resolver.js'
 import type { ResolvedContext } from './context/context-types.js'
-import { DynamicContextProvider } from './context/runtime-context-provider.js'
+import { DeferredContextProvider } from './context/runtime-context-provider.js'
 import type { Message } from './domain/message.js'
 import type { ModelUsage } from './domain/model.js'
 import { selectFromList, type SelectionResult } from './input/cancelable-selector.js'
 import { isReadlineKeyboardInterrupt } from './input/readline-errors.js'
-import { PiAiModelAdapter } from './models/pi-ai-model-adapter.js'
 import type { ModelAdapter } from './models/model-adapter.js'
-import { RetryingModelAdapter } from './models/retrying-model-adapter.js'
 import { renderBanner } from './output/banner-renderer.js'
 import { isBrokenPipeError } from './output/output-errors.js'
 import { encodeJsonLine, toJsonEvent } from './output/json-renderer.js'
@@ -25,21 +23,13 @@ import { renderResumeHint, renderSessionHistory } from './output/session-display
 import { formatToolFinished, formatToolStarted, type HumanToolLine } from './output/tool-event-renderer.js'
 import { PermissionManager } from './permissions/permission-manager.js'
 import type { AgentEvent } from './runtime/agent-event.js'
-import { AgentRuntime, createInitialMessages, systemPrompt } from './runtime/agent-runtime.js'
-import { ContextCompactor } from './runtime/context-compactor.js'
 import { InteractiveSignalState } from './runtime/interactive-signal-state.js'
+import { StartupProfiler } from './runtime/startup-profiler.js'
+import { systemPrompt } from './runtime/system-prompt.js'
 import { SessionManager } from './sessions/session-manager.js'
 import type { SessionSummary } from './sessions/session-schema.js'
 import { SessionStore } from './sessions/session-store.js'
-import { ApplyPatchTool } from './tools/apply-patch-tool.js'
-import { GitDiffTool } from './tools/git-diff-tool.js'
-import { GrepTool } from './tools/grep-tool.js'
-import { ListFilesTool } from './tools/list-files-tool.js'
-import { ReadFileTool } from './tools/read-file-tool.js'
-import { RunCommandTool } from './tools/run-command-tool.js'
-import { ToolRegistry } from './tools/tool-registry.js'
-import { WriteFileTool } from './tools/write-file-tool.js'
-import { ProjectInitializer, type ProjectInitEvent } from './project/project-initializer.js'
+import type { ProjectInitEvent } from './project/project-initializer.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -62,12 +52,13 @@ interface CliOptions {
   listSessions?: boolean
   json?: boolean
   verbose?: boolean
+  verboseStartup?: boolean
   showConfig?: boolean
   showContext?: string | boolean
 }
 
 interface RuntimeBundle {
-  runtime: AgentRuntime
+  runtime: import('./runtime/agent-runtime.js').AgentRuntime
   modelAdapter: ModelAdapter
   session: SessionManager
   provider: string
@@ -95,20 +86,24 @@ const program = new Command()
   .option('--show-context [path]', '显示当前加载的项目上下文；可指定工作区相对路径后退出')
   .option('--json', '以严格 NDJSON 输出运行事件')
   .option('--verbose', '显示工具调用参数和成功结果明细')
+  .option('--verbose-startup', '显示启动阶段耗时诊断')
   .parse()
 
 const promptParts = program.args as string[]
 const options = program.opts<CliOptions>()
 
 async function main(): Promise<void> {
+  const startupProfiler = new StartupProfiler(options.verboseStartup === true)
   if (options.continue && options.resume) throw new Error('--continue 与 --resume 不能同时使用')
   if (options.forkSession && !options.continue && !options.resume) {
     throw new Error('--fork-session 必须与 --continue 或 --resume 一起使用')
   }
 
   const loadedConfig = await loadConfigFiles(process.cwd())
+  startupProfiler.mark('config')
   if (options.showConfig) {
     renderConfig(loadedConfig, options.json ?? false)
+    printStartupReport(startupProfiler)
     return
   }
   if (options.showContext) {
@@ -124,15 +119,19 @@ async function main(): Promise<void> {
       typeof options.showContext === 'string' ? { targetPath: options.showContext } : {},
     )
     renderContext(context, loadedConfig.warnings, options.json ?? false)
+    printStartupReport(startupProfiler)
     return
   }
   for (const warning of loadedConfig.warnings) console.error(`配置警告：${warning}`)
 
   // 会话目录始终从当前工作区创建，不接受 CLI 路径参数，避免跨项目恢复。
   const store = await SessionStore.create(process.cwd())
+  startupProfiler.mark('session-store')
   await store.recoverInterruptedSessions()
+  startupProfiler.mark('session-recovery')
   if (options.listSessions) {
     renderSessions(await store.list(), options.json ?? false)
+    printStartupReport(startupProfiler)
     return
   }
   if (options.json && promptParts.length === 0) throw new Error('--json 需要 prompt，或与 --list-sessions 一起使用')
@@ -180,7 +179,10 @@ async function main(): Promise<void> {
     session ??= await createSession(store, provider, model, options.name)
     const permissionManager = createPermissionManager(options)
     const context = await resolveContext(process.cwd(), config, systemPrompt)
+    startupProfiler.mark('context')
     const bundle = await createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager, context)
+    startupProfiler.mark('runtime')
+    printStartupReport(startupProfiler)
     const sessionRecord = session.snapshot()
     if (options.json) {
       // JSON 模式的 stdout 只能写协议事件，所有警告和诊断仍走 stderr。
@@ -222,7 +224,10 @@ async function main(): Promise<void> {
   })
   session ??= await createSession(store, provider, model, options.name)
   const context = await resolveContext(process.cwd(), config, systemPrompt)
+  startupProfiler.mark('context')
   const bundle = await createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager, context)
+  startupProfiler.mark('runtime')
+  printStartupReport(startupProfiler)
   await runInteractive(bundle, store, config, context, maxTurns, permissionManager, readline, resumed !== undefined)
 }
 
@@ -255,7 +260,7 @@ async function createSession(
     store,
     provider,
     model,
-    createInitialMessages(),
+    [{ role: 'system', content: systemPrompt }],
     await detectGitBranch(process.cwd()),
   )
   if (name) await session.rename(name)
@@ -271,6 +276,30 @@ async function createRuntimeBundle(
   permissionManager: PermissionManager,
   context: ResolvedContext,
 ): Promise<RuntimeBundle> {
+  // 模型、工具和 Runtime 只在真正进入运行路径时加载；show-* 和 list 命令无需承担这些模块成本。
+  const [
+    { PiAiModelAdapter },
+    { RetryingModelAdapter },
+    { AgentRuntime },
+    { ContextCompactor },
+    { ToolRegistry },
+    tools,
+  ] = await Promise.all([
+    import('./models/pi-ai-model-adapter.js'),
+    import('./models/retrying-model-adapter.js'),
+    import('./runtime/agent-runtime.js'),
+    import('./runtime/context-compactor.js'),
+    import('./tools/tool-registry.js'),
+    Promise.all([
+      import('./tools/list-files-tool.js'),
+      import('./tools/read-file-tool.js'),
+      import('./tools/grep-tool.js'),
+      import('./tools/write-file-tool.js'),
+      import('./tools/apply-patch-tool.js'),
+      import('./tools/run-command-tool.js'),
+      import('./tools/git-diff-tool.js'),
+    ]),
+  ])
   const providerModel = new PiAiModelAdapter({
     provider,
     model: modelName,
@@ -287,18 +316,21 @@ async function createRuntimeBundle(
     keepRecentTokens: config.contextKeepRecentTokens,
   })
   const record = session.snapshot()
-  const contextProvider = await DynamicContextProvider.create(process.cwd(), config, systemPrompt)
+  const contextProvider = new DeferredContextProvider(context, async (initialContext) => {
+    const { DynamicContextProvider } = await import('./context/runtime-context-provider.js')
+    return DynamicContextProvider.create(process.cwd(), config, systemPrompt, initialContext)
+  })
   const runtime = new AgentRuntime({
     model,
     tools: new ToolRegistry(
       [
-        new ListFilesTool(),
-        new ReadFileTool(),
-        new GrepTool(),
-        new WriteFileTool(),
-        new ApplyPatchTool(),
-        new RunCommandTool(),
-        new GitDiffTool(),
+        new tools[0].ListFilesTool(),
+        new tools[1].ReadFileTool(),
+        new tools[2].GrepTool(),
+        new tools[3].WriteFileTool(),
+        new tools[4].ApplyPatchTool(),
+        new tools[5].RunCommandTool(),
+        new tools[6].GitDiffTool(),
       ],
       context.disabledTools,
     ),
@@ -530,6 +562,8 @@ async function runProjectInit(
 ): Promise<void> {
   const controller = signalState.beginRun()
   try {
+    // /init 是交互命令，只有用户明确调用时才加载项目扫描和生成模块。
+    const { ProjectInitializer } = await import('./project/project-initializer.js')
     const initializer = new ProjectInitializer({
       workspace: process.cwd(),
       model,
@@ -559,6 +593,11 @@ async function runProjectInit(
   } finally {
     signalState.endRun()
   }
+}
+
+function printStartupReport(profiler: StartupProfiler): void {
+  const report = profiler.report()
+  if (report) console.error(report)
 }
 
 function renderProjectInitEvent(event: ProjectInitEvent): void {

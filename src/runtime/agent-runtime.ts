@@ -6,14 +6,8 @@ import { ToolRegistry } from '../tools/tool-registry.js'
 import type { AgentEvent } from './agent-event.js'
 import type { ContextCompactor } from './context-compactor.js'
 import type { RuntimeContextProvider } from '../context/runtime-context-provider.js'
-
-export const systemPrompt = `你是 PawCode，一个运行在终端中的 AI 编程 Agent。
-需要了解项目时，必须使用工具读取真实文件，不要猜测。
-修改前先读取相关文件，小范围修改优先使用 apply_patch，创建或完整重写文件使用 write_file。
-所有写入和命令都受权限系统控制；权限被拒绝时不要尝试绕过。
-修改后使用 git_diff 检查差异，并根据项目配置运行格式、类型、测试和构建验证。
-未经用户明确要求，不要提交、推送或执行破坏性 Git 操作。
-完成后用简洁中文说明改动、验证结果和仍存在的风险。`
+export { systemPrompt } from './system-prompt.js'
+import { systemPrompt } from './system-prompt.js'
 
 export interface AgentRuntimeOptions {
   model: ModelAdapter
