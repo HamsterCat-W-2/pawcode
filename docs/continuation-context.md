@@ -65,7 +65,7 @@ c66abe8 refactor: split domain types by concept
 - 项目上下文：支持用户级/项目级 `PAWCODE.md`、兼容 `AGENTS.md`、`--show-context [path]` 和路径规则。
 - 动态上下文：工具声明目标路径，Runtime 在工具执行前刷新对应目录上下文；上下文变化只影响后续模型请求，不写入会话历史。
 - `/init` 项目初始化：通过 `ProjectInitializer` 扫描项目、应用默认忽略规则和 `.gitignore`，使用候选评分发现元数据，过滤敏感文件，经权限确认后生成根目录 `PAWCODE.md`；`/init --full` 增加完整文件索引、目录分块和逐块摘要汇总；`--update` 只替换管理区并展示变更预览。
-- 持久化记忆：用户级 `~/.pawcode/memory.json` 和项目级 `.pawcode/memory.json`，通过上下文解析器注入 system prompt；`/memory` 支持查看、添加、删除和清空，记忆不会进入 Session 历史。
+- 持久化记忆：用户级 `~/.pawcode/memory.json` 和项目级 `.pawcode/memory.json`，通过上下文解析器注入 system prompt；`/memory` 支持查看、添加、更新、删除和清空，记忆不会进入 Session 历史。
 - 启动性能：模型与工具按需加载，动态上下文提供器延迟到首次工具调用前创建，会话恢复扫描单次读取；`--verbose-startup` 可输出启动阶段耗时。
 - 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，普通输入态 `Esc` 清空输入。公共可取消选择器让 `/resume` 中的 `Esc` 返回原会话输入提示，也让启动参数 `pawcode --resume` 中的 `Esc` 正常返回 shell。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
@@ -366,10 +366,10 @@ pnpm dev --json "检查项目"
 
 ## 当前验证基线
 
-`cdbf57b` 及当前持久化记忆修改完成后：
+`69dedc3` 及当前持久化记忆管理加固修改完成后：
 
 - Prettier、TypeScript 类型检查和构建通过。
-- 23 个测试文件、92 个测试通过。
+- 23 个测试文件、93 个测试通过。
 - 覆盖分层配置、静态/动态上下文、路径规则、快速/完整 `/init` 扫描、分块摘要、`.gitignore`、敏感文件过滤和已有 `PAWCODE.md` 保护。
 - `git diff --check` 通过。
 - 构建后的 CLI 已验证 `--show-config --json` 和 `--show-context [path]` 输出合法 NDJSON。
@@ -415,6 +415,7 @@ v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用
 2. 完善 `.gitignore` 复杂 glob、反选、转义字符和目录规则测试；补充工作区内外符号链接测试（见 `docs/v0.5-init-ignore-safety-design.md`）。
 3. 支持 `/init --update` 和 `/init --full --update`，仅替换唯一 PawCode 管理区，保留用户内容并展示变更预览（见 `docs/v0.5-init-update-design.md`）。
 4. 实现用户级和项目级持久化记忆、`/memory` 命令及敏感内容过滤（见 `docs/v0.5-persistent-memory-design.md`）。
+5. 补充 `/memory update`、记忆来源统计和固定的用户级/项目级优先级（见 `docs/v0.5-memory-hardening-design.md`）。
 
 后续补强：
 

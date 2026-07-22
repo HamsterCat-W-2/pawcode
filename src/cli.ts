@@ -71,7 +71,7 @@ type SessionResolution = { status: 'ready'; session: SessionManager | undefined 
 const program = new Command()
   .name('paw')
   .description('PawCode：终端中的 AI 编程伙伴')
-  .version('0.4.1')
+  .version('0.5.0')
   .argument('[prompt...]', '直接执行一次问题；省略时进入交互模式')
   .option('--provider <name>', '覆盖配置文件或恢复会话中的模型供应商')
   .option('--model <name>', '覆盖配置文件或恢复会话中的模型名称')
@@ -630,6 +630,7 @@ function parseProjectInitCommand(input: string): { full: boolean; update: boolea
 type MemoryCommand =
   | { type: 'list' }
   | { type: 'add'; scope: MemoryScope; content: string }
+  | { type: 'update'; scope: MemoryScope; id: string; content: string }
   | { type: 'remove'; scope: MemoryScope; id: string }
   | { type: 'clear'; scope: MemoryScope }
 
@@ -645,6 +646,14 @@ function parseMemoryCommand(input: string): MemoryCommand | undefined {
       .join(' ')
     return { type: 'add', scope, content }
   }
+  if (action === 'update') {
+    const id = parts.find((part) => part.startsWith('mem_')) ?? ''
+    const content = parts
+      .slice(2)
+      .filter((part) => part !== '--user' && part !== '--project' && part !== id)
+      .join(' ')
+    return { type: 'update', scope, id, content }
+  }
   if (action === 'remove')
     return { type: 'remove', scope, id: parts.find((part) => !part.startsWith('--') && part !== 'remove') ?? '' }
   if (action === 'clear') return { type: 'clear', scope }
@@ -655,7 +664,7 @@ async function runMemoryCommand(input: string, permissionManager: PermissionMana
   const command = parseMemoryCommand(input)
   if (!command) {
     console.log(
-      '\n用法：/memory | /memory add [--user|--project] <内容> | /memory remove <id> [--user] | /memory clear [--user|--project]\n',
+      '\n用法：/memory | /memory add [--user|--project] <内容> | /memory update <id> [--user|--project] <内容> | /memory remove <id> [--user] | /memory clear [--user|--project]\n',
     )
     return
   }
@@ -678,7 +687,13 @@ async function runMemoryCommand(input: string, permissionManager: PermissionMana
     }
 
     const description =
-      command.type === 'add' ? '添加持久化记忆' : command.type === 'remove' ? '删除持久化记忆' : '清空持久化记忆'
+      command.type === 'add'
+        ? '添加持久化记忆'
+        : command.type === 'update'
+          ? '更新持久化记忆'
+          : command.type === 'remove'
+            ? '删除持久化记忆'
+            : '清空持久化记忆'
     const permission = await permissionManager.authorize({
       capability: 'write',
       tool: 'memory',
@@ -692,6 +707,9 @@ async function runMemoryCommand(input: string, permissionManager: PermissionMana
     if (command.type === 'add') {
       const entry = await store.add(command.scope, command.content)
       console.log(`\n已添加${command.scope === 'user' ? '用户级' : '项目级'}记忆：${entry.id}\n`)
+    } else if (command.type === 'update') {
+      await store.update(command.scope, command.id, command.content)
+      console.log(`\n已更新记忆：${command.id}\n`)
     } else if (command.type === 'remove') {
       await store.remove(command.scope, command.id)
       console.log(`\n已删除记忆：${command.id}\n`)
@@ -931,9 +949,18 @@ function renderConfig(loaded: LoadedConfigFile, json: boolean): void {
 }
 
 function renderContext(context: ResolvedContext, configWarnings: string[], json: boolean): void {
+  const memory = context.sources.reduce(
+    (counts, source) => {
+      if (source.kind === 'memory-user') counts.user += source.memoryEntries ?? 0
+      if (source.kind === 'memory-project') counts.project += source.memoryEntries ?? 0
+      return counts
+    },
+    { user: 0, project: 0 },
+  )
   const payload = {
     sources: context.sources,
     disabledTools: context.disabledTools,
+    memory,
     diagnostics: [...configWarnings, ...context.diagnostics],
   }
   if (json) {
@@ -945,6 +972,9 @@ function renderContext(context: ResolvedContext, configWarnings: string[], json:
     console.log(`- [${source.kind}] ${source.path} (${source.bytes} bytes, sha256 ${source.hash.slice(0, 12)})`)
   }
   if (context.disabledTools.length > 0) console.log(`禁用工具：${context.disabledTools.join(', ')}`)
+  if (memory.user > 0 || memory.project > 0) {
+    console.log(`持久化记忆：用户级 ${memory.user} 条，项目级 ${memory.project} 条`)
+  }
   for (const diagnostic of payload.diagnostics) console.error(`警告：${diagnostic}`)
 }
 
@@ -987,7 +1017,7 @@ function printInteractiveHeader(bundle: RuntimeBundle): void {
     ? `${session.name} (${session.id.slice(0, 8)})`
     : `${session.id.slice(0, 8)} — ${session.title}`
   const banner = renderBanner({
-    version: '0.4.1',
+    version: '0.5.0',
     provider: bundle.provider,
     model: bundle.model,
     workspace: process.cwd(),

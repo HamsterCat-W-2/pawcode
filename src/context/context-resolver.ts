@@ -188,6 +188,7 @@ function appendMemory(result: MemoryReadResult, loaded: LoadedInstruction[], dia
       bytes: Buffer.byteLength(content, 'utf8'),
       hash: createHash('sha256').update(content).digest('hex'),
       enabled: true,
+      memoryEntries: result.entries.length,
     },
     content,
   })

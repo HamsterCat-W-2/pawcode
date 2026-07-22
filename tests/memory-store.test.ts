@@ -24,6 +24,11 @@ describe('持久化记忆', () => {
     const projectEntry = await store.add('project', '项目包管理器使用 pnpm')
     expect((await store.list()).flatMap((result) => result.entries)).toHaveLength(2)
 
+    const updated = await store.update('project', projectEntry.id, '项目使用 pnpm 11')
+    expect(updated.id).toBe(projectEntry.id)
+    expect(updated.createdAt).toBe(projectEntry.createdAt)
+    expect(updated.content).toBe('项目使用 pnpm 11')
+
     await store.remove('user', userEntry.id)
     expect((await store.read('user')).entries).toEqual([])
     await store.clear('project')
@@ -45,6 +50,7 @@ describe('持久化记忆', () => {
     expect(context.systemPrompt).toContain('统一使用 pnpm test')
     expect(context.systemPrompt).toContain('不要修改生成目录')
     expect(context.sources.map((source) => source.kind)).toEqual(['memory-user', 'memory-project'])
+    expect(context.sources.map((source) => source.memoryEntries)).toEqual([1, 1])
   })
 
   it('损坏的记忆文件只产生诊断，不阻断上下文加载', async () => {

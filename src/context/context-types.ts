@@ -5,6 +5,7 @@ export interface ContextSource {
   bytes: number
   hash: string
   enabled: boolean
+  memoryEntries?: number
   reason?: string
 }
 

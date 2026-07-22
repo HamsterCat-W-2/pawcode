@@ -1,6 +1,6 @@
 # PawCode
 
-PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 Agent。当前 v0.4.1 可以在统一权限控制下读写项目、执行命令、持久化项目级会话、压缩长上下文并输出 NDJSON，通过 `pi-ai` 兼容多个模型供应商，同时提供模型重试、原子写入和异常中断恢复。
+PawCode 是一个使用 Node.js、TypeScript 和 pnpm 构建的终端 AI 编程 Agent。当前 v0.5.0 可以在统一权限控制下读写项目、执行命令、持久化项目级会话和跨会话记忆、加载分层项目上下文、生成与安全更新 `PAWCODE.md`、压缩长上下文并输出 NDJSON，通过 `pi-ai` 兼容多个模型供应商，同时提供模型重试、原子写入和异常中断恢复。
 
 ## 当前能力
 
@@ -236,7 +236,8 @@ v0.5：
 - 项目上下文文件与 `AGENTS.md` 兼容读取。
 - 用户级、项目级和本地级 JSON 配置。
 - 配置来源诊断、路径规则和上下文按需注入。
-- MCP Client、Hooks、Skills 和子 Agent 将在 v0.5 后续版本实现。
+- 持久化用户级/项目级记忆，以及安全生成和更新 `PAWCODE.md`。
+- MCP Client、Hooks、Skills 和子 Agent 将在 v0.5.1 及后续版本实现。
 
 ## 安全说明
 

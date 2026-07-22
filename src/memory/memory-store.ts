@@ -81,11 +81,7 @@ export class PersistentMemoryStore {
   }
 
   async add(scope: MemoryScope, content: string): Promise<MemoryEntry> {
-    const normalized = content.trim()
-    if (!normalized) throw new Error('记忆内容不能为空')
-    if (normalized.length > 4_096) throw new Error('单条记忆不能超过 4096 个字符')
-    if (sensitiveMemoryPattern.test(normalized))
-      throw new Error('记忆内容疑似包含敏感的密钥、Token、密码或私钥，拒绝保存')
+    const normalized = validateMemoryContent(content)
 
     const current = await this.read(scope)
     if (current.diagnostic) throw new Error(current.diagnostic)
@@ -101,8 +97,27 @@ export class PersistentMemoryStore {
     return entry
   }
 
+  async update(scope: MemoryScope, id: string, content: string): Promise<MemoryEntry> {
+    assertMemoryId(id)
+    const normalized = validateMemoryContent(content)
+    const current = await this.read(scope)
+    if (current.diagnostic) throw new Error(current.diagnostic)
+    const existing = current.entries.find((entry) => entry.id === id)
+    if (!existing) throw new Error(`找不到记忆：${id}`)
+    const updated: MemoryEntry = {
+      ...existing,
+      content: normalized,
+      updatedAt: new Date().toISOString(),
+    }
+    await this.write(
+      scope,
+      current.entries.map((entry) => (entry.id === id ? updated : entry)),
+    )
+    return updated
+  }
+
   async remove(scope: MemoryScope, id: string): Promise<void> {
-    if (!/^mem_[A-Za-z0-9_-]{8,80}$/.test(id)) throw new Error(`非法记忆 ID：${id}`)
+    assertMemoryId(id)
     const current = await this.read(scope)
     if (current.diagnostic) throw new Error(current.diagnostic)
     const next = current.entries.filter((entry) => entry.id !== id)
@@ -130,6 +145,20 @@ export class PersistentMemoryStore {
       ? path.join(this.homeDirectory, '.pawcode', 'memory.json')
       : path.join(this.workspace, '.pawcode', 'memory.json')
   }
+}
+
+function validateMemoryContent(content: string): string {
+  const normalized = content.trim()
+  if (!normalized) throw new Error('记忆内容不能为空')
+  if (normalized.length > 4_096) throw new Error('单条记忆不能超过 4096 个字符')
+  if (sensitiveMemoryPattern.test(normalized)) {
+    throw new Error('记忆内容疑似包含敏感的密钥、Token、密码或私钥，拒绝保存')
+  }
+  return normalized
+}
+
+function assertMemoryId(id: string): void {
+  if (!/^mem_[A-Za-z0-9_-]{8,80}$/.test(id)) throw new Error(`非法记忆 ID：${id}`)
 }
 
 function isMissingPathError(error: unknown): boolean {

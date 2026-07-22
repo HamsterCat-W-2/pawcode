@@ -16,6 +16,17 @@ describe('PermissionManager', () => {
     })
   })
 
+  it('非交互模式默认拒绝持久化记忆写入', async () => {
+    await expect(
+      new PermissionManager().authorize({
+        capability: 'write',
+        tool: 'memory',
+        description: '添加持久化记忆',
+        resource: 'project memory',
+      }),
+    ).resolves.toMatchObject({ allowed: false })
+  })
+
   it('交互确认可允许一次或记住当前会话的同一操作', async () => {
     const confirm = vi.fn(async () => 'allow_session' as const)
     const manager = new PermissionManager({ confirm })

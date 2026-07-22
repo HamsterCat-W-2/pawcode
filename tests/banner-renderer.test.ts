@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { renderBanner, type BannerOptions } from '../src/output/banner-renderer.js'
 
 const baseOptions: BannerOptions = {
-  version: '0.4.1',
+  version: '0.5.0',
   provider: 'test-provider',
   model: 'test-model',
   workspace: '/workspace/pawcode',
@@ -25,7 +25,7 @@ describe('banner renderer', () => {
   it('窄终端降级为紧凑标题', () => {
     const banner = renderBanner({ ...baseOptions, columns: 50 })
 
-    expect(banner).toContain('🐾 PAWCODE v0.4.1')
+    expect(banner).toContain('🐾 PAWCODE v0.5.0')
     expect(banner).not.toContain('██████╗')
   })
 
