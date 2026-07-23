@@ -64,6 +64,7 @@ interface RuntimeBundle {
   session: SessionManager
   provider: string
   model: string
+  close: () => Promise<void>
 }
 
 type SessionResolution = { status: 'ready'; session: SessionManager | undefined } | { status: 'cancelled' }
@@ -201,13 +202,17 @@ async function main(): Promise<void> {
     } else {
       console.log(`会话：${sessionRecord.id}`)
     }
-    await renderRun(
-      bundle,
-      promptParts.join(' '),
-      options.json
-        ? renderJsonEvent
-        : (event, state) => renderHumanEvent(event, state, options.verbose ?? config.display.verboseTools),
-    )
+    try {
+      await renderRun(
+        bundle,
+        promptParts.join(' '),
+        options.json
+          ? renderJsonEvent
+          : (event, state) => renderHumanEvent(event, state, options.verbose ?? config.display.verboseTools),
+      )
+    } finally {
+      await bundle.close()
+    }
     return
   }
 
@@ -317,11 +322,16 @@ async function createRuntimeBundle(
     keepRecentTokens: config.contextKeepRecentTokens,
   })
   const record = session.snapshot()
+  const { loadMcpTools } = await import('./mcp/mcp-client.js')
+  // MCP Client 隶属于当前 Runtime；重建会话时由调用方先 close 旧 Runtime，避免子进程泄漏。
+  const mcp = await loadMcpTools(config.mcp.servers, process.cwd())
+  for (const diagnostic of mcp.diagnostics) console.error(`配置警告：${diagnostic}`)
   const contextProvider = new DeferredContextProvider(context, async (initialContext) => {
     const { DynamicContextProvider } = await import('./context/runtime-context-provider.js')
     return DynamicContextProvider.create(process.cwd(), config, systemPrompt, initialContext)
   })
   const runtime = new AgentRuntime({
+    // MCP 工具与内置工具共用 ToolRegistry，因此权限、禁用工具和输出截断保持一致。
     model,
     tools: new ToolRegistry(
       [
@@ -332,6 +342,7 @@ async function createRuntimeBundle(
         new tools[4].ApplyPatchTool(),
         new tools[5].RunCommandTool(),
         new tools[6].GitDiffTool(),
+        ...mcp.tools,
       ],
       context.disabledTools,
     ),
@@ -348,7 +359,15 @@ async function createRuntimeBundle(
     onMessagesChanged: (messages) => session.updateMessages(messages),
     onContextCompacted: () => session.markCompacted(),
   })
-  return { runtime, modelAdapter: model, session, provider, model: modelName }
+  return {
+    runtime,
+    modelAdapter: model,
+    session,
+    provider,
+    model: modelName,
+    // 关闭 Runtime 时统一回收所有 MCP Server，保证 one-shot 和交互模式行为一致。
+    close: async () => Promise.all(mcp.clients.map((client) => client.close())).then(() => undefined),
+  }
 }
 
 function createPermissionManager(
@@ -449,6 +468,7 @@ async function runInteractive(
         // “本会话允许”属于内存授权，切换会话身份时必须主动清空。
         permissionManager.clearSessionRules()
         const session = await createSession(store, bundle.provider, bundle.model)
+        await bundle.close()
         bundle = await createRuntimeBundle(
           session,
           bundle.provider,
@@ -492,6 +512,7 @@ async function runInteractive(
           // 只有实际切换成功后才清空旧会话的内存授权；取消选择必须保持原会话不变。
           permissionManager.clearSessionRules()
           const record = session.snapshot()
+          await bundle.close()
           bundle = await createRuntimeBundle(
             session,
             record.provider,
@@ -525,6 +546,7 @@ async function runInteractive(
           const name = input.slice('/branch'.length).trim() || undefined
           const session = await SessionManager.fork(store, bundle.session.snapshot(), name)
           const record = session.snapshot()
+          await bundle.close()
           bundle = await createRuntimeBundle(
             session,
             record.provider,
@@ -557,6 +579,7 @@ async function runInteractive(
     process.removeListener('SIGINT', handleKeyboardExit)
     stdin.removeListener('keypress', handleKeypress)
     readline.close()
+    await bundle.close()
   }
 }
 
@@ -979,8 +1002,22 @@ function renderContext(context: ResolvedContext, configWarnings: string[], json:
 }
 
 function redactConfig(config: LoadedConfigFile['config']): LoadedConfigFile['config'] {
-  if (!config.model?.apiKey) return config
-  return { ...config, model: { ...config.model, apiKey: '<redacted>' } }
+  const redactedModel = config.model?.apiKey ? { ...config.model, apiKey: '<redacted>' } : config.model
+  const redactedServers = config.mcp?.servers
+    ? Object.fromEntries(
+        Object.entries(config.mcp.servers).map(([name, server]) => [
+          name,
+          server.env
+            ? { ...server, env: Object.fromEntries(Object.keys(server.env).map((key) => [key, '<redacted>'])) }
+            : server,
+        ]),
+      )
+    : undefined
+  return {
+    ...config,
+    ...(redactedModel ? { model: redactedModel } : {}),
+    ...(redactedServers ? { mcp: { ...config.mcp, servers: redactedServers } } : {}),
+  }
 }
 
 interface PickSessionOptions {

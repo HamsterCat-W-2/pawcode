@@ -5,10 +5,10 @@
 ## 当前状态
 
 - 项目：Node.js、TypeScript、pnpm 编写的终端 AI 编程 Agent。
-- 版本：v0.5 开发中。
+- 版本：v0.5.0，v0.5.1 MCP Client 开发中。
 - 项目路径：`pawcode`。
 - 分支：`codex/v0.5-project-context-config`。
-- 当前 HEAD 为 `cdbf57b`，分支 `codex/v0.5-project-context-config`；工作区状态以实际 `git status` 为准，不得擅自删除、覆盖或提交用户文件。
+- 当前基线 HEAD 为 `d3915a9`，分支 `codex/v0.5-project-context-config`；MCP stdio 实现当前尚未提交，工作区状态以实际 `git status` 为准，不得擅自删除、覆盖或提交用户文件。
 - v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner，以及 v0.4.1 错误恢复加固均已合并到 `main`。
 - v0.4.1 错误恢复由提交 `19b0e6d` 完成，延续上下文文档由 `986fa20` 更新。
 - 公共可取消列表选择器以及 `/resume`、`pawcode --resume` 的 CLI 回归测试由提交 `b9c3848` 完成并已合并。
@@ -17,6 +17,7 @@
 v0.5 当前提交链：
 
 ```text
+d3915a9 chore: release v0.5.0
 cdbf57b perf: optimize startup initialization
 167b29d feat: add full project initialization
 f4c0e31 feat: add project init command
@@ -60,12 +61,13 @@ c66abe8 refactor: split domain types by concept
 - 项目级 `.pawcode/sessions` 会话保存、列表、恢复和工作区校验。
 - Session schema v1、Zod 磁盘校验、`0600` 权限和临时文件原子替换。
 - Claude Code 风格会话入口：`--continue/-c`、`--resume/-r [id|name]`、`--fork-session`、`--name/-n` 和 `--list-sessions`。
-- 交互会话命令：`/init`、`/init --full`、`/init --update`、`/init --full --update`、`/memory`、`/memory add`、`/memory remove`、`/memory clear`、`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。`/init` 快速扫描项目，`/init --full` 按目录分块摘要大型项目；普通模式已有文件不会覆盖，显式 `--update` 只更新 `PAWCODE.md` 的唯一 PawCode 管理区。
+- 交互会话命令：`/init`、`/init --full`、`/init --update`、`/init --full --update`、`/memory`、`/memory add`、`/memory update`、`/memory remove`、`/memory clear`、`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。`/init` 快速扫描项目，`/init --full` 按目录分块摘要大型项目；普通模式已有文件不会覆盖，显式 `--update` 只更新 `PAWCODE.md` 的唯一 PawCode 管理区。
 - 分层 JSON 配置：用户级 `~/.pawcode/config.json`、项目级 `.pawcode/config.json`、本地级 `.pawcode/config.local.json`；API Key 只允许用户级配置，不再读取 `.env`。
 - 项目上下文：支持用户级/项目级 `PAWCODE.md`、兼容 `AGENTS.md`、`--show-context [path]` 和路径规则。
 - 动态上下文：工具声明目标路径，Runtime 在工具执行前刷新对应目录上下文；上下文变化只影响后续模型请求，不写入会话历史。
 - `/init` 项目初始化：通过 `ProjectInitializer` 扫描项目、应用默认忽略规则和 `.gitignore`，使用候选评分发现元数据，过滤敏感文件，经权限确认后生成根目录 `PAWCODE.md`；`/init --full` 增加完整文件索引、目录分块和逐块摘要汇总；`--update` 只替换管理区并展示变更预览。
 - 持久化记忆：用户级 `~/.pawcode/memory.json` 和项目级 `.pawcode/memory.json`，通过上下文解析器注入 system prompt；`/memory` 支持查看、添加、更新、删除和清空，记忆不会进入 Session 历史。
+- MCP Client：当前工作区已实现第一阶段 stdio 配置、initialize、tools/list、tools/call 和 `mcp_<server>_<tool>` 映射；配置与权限边界见 `docs/v0.5.1-mcp-client-design.md`。
 - 启动性能：模型与工具按需加载，动态上下文提供器延迟到首次工具调用前创建，会话恢复扫描单次读取；`--verbose-startup` 可输出启动阶段耗时。
 - 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，普通输入态 `Esc` 清空输入。公共可取消选择器让 `/resume` 中的 `Esc` 返回原会话输入提示，也让启动参数 `pawcode --resume` 中的 `Esc` 正常返回 shell。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
@@ -77,7 +79,7 @@ c66abe8 refactor: split domain types by concept
 - v0.4.1：会话、`write_file` 和 `apply_patch` 使用同目录临时文件、`fsync` 和原子替换。
 - v0.4.1：权限确认响应 Esc/Ctrl+C 的 AbortSignal，stdout `EPIPE` 正常退出。
 
-设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md)、[v0.5-init-design.md](./v0.5-init-design.md) 和 [v0.5-init-full-design.md](./v0.5-init-full-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
+设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md)、[v0.5-init-design.md](./v0.5-init-design.md)、[v0.5-init-full-design.md](./v0.5-init-full-design.md) 和 [v0.5.1-mcp-client-design.md](./v0.5.1-mcp-client-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
 
 ## 必须保持的架构边界
 
@@ -360,18 +362,19 @@ pnpm dev --list-sessions
 pnpm dev --json "检查项目"
 ```
 
-进入交互模式后输入 `/init` 或 `/init --full` 可生成项目根目录 `PAWCODE.md`；已有文件默认不覆盖。两个命令当前仅支持交互模式，不支持 JSON 或单次 prompt 模式。
+进入交互模式后输入 `/init`、`/init --full` 或显式更新命令可管理项目根目录 `PAWCODE.md`；已有文件默认不覆盖。上述交互命令当前不支持 JSON 或单次 prompt 模式。
 
 交互模式会询问副作用权限。单次非交互模式必须通过 `--allow-write` 或可重复的 `--allow-command <prefix>` 显式授权。
 
 ## 当前验证基线
 
-`69dedc3` 及当前持久化记忆管理加固修改完成后：
+`d3915a9` 及当前 MCP stdio 修改完成后：
 
 - Prettier、TypeScript 类型检查和构建通过。
-- 23 个测试文件、93 个测试通过。
+- 24 个测试文件、96 个测试通过。
 - 覆盖分层配置、静态/动态上下文、路径规则、快速/完整 `/init` 扫描、分块摘要、`.gitignore`、敏感文件过滤和已有 `PAWCODE.md` 保护。
 - `git diff --check` 通过。
+- MCP stdio 测试覆盖 initialize、tools/list、tools/call、工具映射、超时基础路径和权限拒绝。
 - 构建后的 CLI 已验证 `--show-config --json` 和 `--show-context [path]` 输出合法 NDJSON。
 
 标准验证：
@@ -419,8 +422,8 @@ v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用
 
 后续补强：
 
-1. 为持久化记忆增加更细的编辑预览、记忆优先级和冲突处理。
-2. 进入 `v0.5.1 MCP Client`，先实现 stdio 工具发现和现有 `ToolRegistry` 映射。
+1. 为 MCP 增加更细的工具 schema 校验、进程退出诊断和工具列表变更处理。
+2. 增加 MCP Streamable HTTP，再评估 OAuth、resources、prompts 和更细的服务器信任策略。
 
 ### v0.5.1：MCP Client
 

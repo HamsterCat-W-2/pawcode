@@ -54,8 +54,12 @@ export async function loadConfigFiles(workspace: string, options: ConfigLoaderOp
     const result = await readConfigFile(kind, filePath, warnings)
     sources.push({ kind, path: filePath, loaded: result !== undefined, overriddenFields: [] })
     if (!result) continue
+    // 项目/本地配置可以共享行为，但不能携带个人凭据或 MCP Server 环境凭据。
     if (kind !== 'user' && result.model?.apiKey) {
       throw new Error(`配置文件 ${filePath} 不允许保存 model.apiKey；请迁移到 ${userPath}`)
+    }
+    if (kind !== 'user' && Object.values(result.mcp?.servers ?? {}).some((server) => server.env)) {
+      throw new Error(`配置文件 ${filePath} 不允许保存 mcp.servers.*.env；请迁移到 ${userPath}`)
     }
     const before = flattenFields(merged)
     merged = mergeConfig(merged, result)
@@ -107,6 +111,7 @@ export async function ensureUserConfigDirectory(homeDirectory = os.homedir()): P
 }
 
 function mergeConfig(base: PawCodeConfigFile, next: PawCodeConfigFile): PawCodeConfigFile {
+  // 配置按层级覆盖标量字段；嵌套对象和 MCP Server 集合则逐层合并，避免覆盖未修改的字段。
   return {
     ...base,
     ...next,
@@ -114,6 +119,17 @@ function mergeConfig(base: PawCodeConfigFile, next: PawCodeConfigFile): PawCodeC
     ...(base.instructions || next.instructions ? { instructions: { ...base.instructions, ...next.instructions } } : {}),
     ...(base.context || next.context ? { context: { ...base.context, ...next.context } } : {}),
     ...(base.display || next.display ? { display: { ...base.display, ...next.display } } : {}),
+    ...(base.mcp || next.mcp
+      ? {
+          mcp: {
+            ...base.mcp,
+            ...next.mcp,
+            ...(base.mcp?.servers || next.mcp?.servers
+              ? { servers: { ...base.mcp?.servers, ...next.mcp?.servers } }
+              : {}),
+          },
+        }
+      : {}),
   }
 }
 

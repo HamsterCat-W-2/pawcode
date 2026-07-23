@@ -81,6 +81,26 @@ describe('分层配置', () => {
     await writeJson(path.join(root, '.pawcode/config.json'), { model: { apiKey: 'must-not-be-here' } })
     await expect(loadConfigFiles(root, { homeDirectory: path.join(root, 'home') })).rejects.toThrow('model.apiKey')
   })
+
+  it('合并 MCP Server 配置，但拒绝项目级环境变量', async () => {
+    const root = await createFixture()
+    const home = path.join(root, 'home')
+    await mkdir(path.join(home, '.pawcode'), { recursive: true, mode: 0o700 })
+    await writeJson(path.join(home, '.pawcode/config.json'), {
+      model: { name: 'test-model' },
+      mcp: { servers: { shared: { command: 'node', env: { TOKEN: 'secret' } } } },
+    })
+    await writeJson(path.join(root, '.pawcode/config.json'), {
+      mcp: { servers: { project: { command: 'node' } } },
+    })
+    const loaded = await loadConfigFiles(root, { homeDirectory: home })
+    expect(Object.keys(loadConfig(loaded.config).mcp.servers)).toEqual(['shared', 'project'])
+
+    await writeJson(path.join(root, '.pawcode/config.json'), {
+      mcp: { servers: { project: { command: 'node', env: { TOKEN: 'must-not-be-here' } } } },
+    })
+    await expect(loadConfigFiles(root, { homeDirectory: home })).rejects.toThrow('mcp.servers.*.env')
+  })
 })
 
 async function createFixture(): Promise<string> {
