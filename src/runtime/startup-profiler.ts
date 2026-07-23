@@ -22,6 +22,15 @@ export class StartupProfiler {
     this.lastMarkAt = now
   }
 
+  /**
+   * 记录由其他模块测量出的独立耗时，例如并行 MCP Server 的阶段耗时。
+   * 不更新 lastMarkAt，因为外部耗时与 CLI 主流程的连续阶段不是同一条时间线。
+   */
+  record(name: string, elapsedMs: number): void {
+    if (!this.enabled) return
+    this.marks.push({ name, elapsedMs: roundMilliseconds(elapsedMs) })
+  }
+
   report(): string {
     if (!this.enabled) return ''
     const lines = this.marks.map((mark) => `- ${mark.name}: ${mark.elapsedMs}ms`)

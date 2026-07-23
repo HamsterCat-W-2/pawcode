@@ -5,10 +5,10 @@
 ## 当前状态
 
 - 项目：Node.js、TypeScript、pnpm 编写的终端 AI 编程 Agent。
-- 版本：v0.5.0，v0.5.1 MCP Client 开发中。
+- 版本：v0.5.0，v0.5.1 MCP Client 已完成第一阶段，v0.5.2 启动性能优化开发中。
 - 项目路径：`pawcode`。
 - 分支：`codex/v0.5-project-context-config`。
-- 当前基线 HEAD 为 `d3915a9`，分支 `codex/v0.5-project-context-config`；MCP stdio 实现当前尚未提交，工作区状态以实际 `git status` 为准，不得擅自删除、覆盖或提交用户文件。
+- 当前基线 HEAD 为 `6131c12`，分支 `codex/v0.5-project-context-config`；MCP stdio Client、技术文档和 Demo Server 已提交，后续性能优化工作区状态以实际 `git status` 为准，不得擅自删除、覆盖或提交用户文件。
 - v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner，以及 v0.4.1 错误恢复加固均已合并到 `main`。
 - v0.4.1 错误恢复由提交 `19b0e6d` 完成，延续上下文文档由 `986fa20` 更新。
 - 公共可取消列表选择器以及 `/resume`、`pawcode --resume` 的 CLI 回归测试由提交 `b9c3848` 完成并已合并。
@@ -67,8 +67,8 @@ c66abe8 refactor: split domain types by concept
 - 动态上下文：工具声明目标路径，Runtime 在工具执行前刷新对应目录上下文；上下文变化只影响后续模型请求，不写入会话历史。
 - `/init` 项目初始化：通过 `ProjectInitializer` 扫描项目、应用默认忽略规则和 `.gitignore`，使用候选评分发现元数据，过滤敏感文件，经权限确认后生成根目录 `PAWCODE.md`；`/init --full` 增加完整文件索引、目录分块和逐块摘要汇总；`--update` 只替换管理区并展示变更预览。
 - 持久化记忆：用户级 `~/.pawcode/memory.json` 和项目级 `.pawcode/memory.json`，通过上下文解析器注入 system prompt；`/memory` 支持查看、添加、更新、删除和清空，记忆不会进入 Session 历史。
-- MCP Client：当前工作区已实现第一阶段 stdio 配置、initialize、tools/list、tools/call 和 `mcp_<server>_<tool>` 映射；配置与权限边界见 `docs/v0.5.1-mcp-client-design.md`。
-- 启动性能：模型与工具按需加载，动态上下文提供器延迟到首次工具调用前创建，会话恢复扫描单次读取；`--verbose-startup` 可输出启动阶段耗时。
+- MCP Client：已实现第一阶段 stdio 配置、initialize、tools/list、tools/call、`mcp_<server>_<tool>` 映射、权限校验、超时和进程回收；配置与权限边界见 `docs/v0.5.1-mcp-client-design.md`。
+- 启动性能：模型与工具按需加载，动态上下文提供器延迟到首次工具调用前创建，会话恢复扫描单次读取；MCP Server 已改为并行加载，并可记录 spawn、initialize、tools/list 和总耗时，设计见 `docs/v0.5.2-mcp-startup-performance-design.md`。
 - 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，普通输入态 `Esc` 清空输入。公共可取消选择器让 `/resume` 中的 `Esc` 返回原会话输入提示，也让启动参数 `pawcode --resume` 中的 `Esc` 正常返回 shell。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
 - `--json` 严格 NDJSON；stdout 不混入人类装饰输出，非交互副作用默认拒绝。
@@ -79,7 +79,7 @@ c66abe8 refactor: split domain types by concept
 - v0.4.1：会话、`write_file` 和 `apply_patch` 使用同目录临时文件、`fsync` 和原子替换。
 - v0.4.1：权限确认响应 Esc/Ctrl+C 的 AbortSignal，stdout `EPIPE` 正常退出。
 
-设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md)、[v0.5-init-design.md](./v0.5-init-design.md)、[v0.5-init-full-design.md](./v0.5-init-full-design.md) 和 [v0.5.1-mcp-client-design.md](./v0.5.1-mcp-client-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
+设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md)、[v0.5-init-design.md](./v0.5-init-design.md)、[v0.5-init-full-design.md](./v0.5-init-full-design.md)、[v0.5.1-mcp-client-design.md](./v0.5.1-mcp-client-design.md) 和 [v0.5.2-mcp-startup-performance-design.md](./v0.5.2-mcp-startup-performance-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
 
 ## 必须保持的架构边界
 
@@ -427,10 +427,22 @@ v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用
 
 ### v0.5.1：MCP Client
 
-1. 第一阶段支持 stdio 和 Streamable HTTP，并统一映射到现有 `Tool` 接口。
-2. 支持用户级和项目级 MCP 配置、工具发现、连接超时、调用超时及输出截断。
-3. MCP 副作用工具必须继续经过 `ToolRegistry` 和 `PermissionManager`，不能因来自外部服务器而绕过授权。
-4. 基础调用稳定后，再增加 OAuth、resources、prompts 和更细的服务器信任策略。
+已完成：
+
+1. 第一阶段支持 MCP stdio，并统一映射到现有 `Tool` 接口。
+2. 支持用户级、项目级和本地级 MCP 配置、工具发现、连接超时、调用超时及输出截断。
+3. MCP 副作用工具继续经过 `ToolRegistry` 和 `PermissionManager`，不能因来自外部服务器而绕过授权。
+4. 提供 `examples/demo-mcp-server.js` 和 MCP Client 自动测试。
+
+### v0.5.2：MCP 启动性能
+
+进行中：
+
+1. 并行加载多个 MCP Server，保持单个 Server 内部握手和工具发现顺序。
+2. 记录 spawn、initialize、tools/list、单 Server total 和 MCP total 耗时。
+3. 补充并行加载、失败隔离、稳定排序和子进程回收测试。
+
+设计文档：[v0.5.2-mcp-startup-performance-design.md](./v0.5.2-mcp-startup-performance-design.md)。
 
 ### v0.5.2：公共 Hooks 事件总线
 

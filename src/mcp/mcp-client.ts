@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
+import { performance } from 'node:perf_hooks'
 import { createInterface } from 'node:readline'
 import type { McpServerConfig } from '../config/config.js'
 import type { ToolDefinition } from '../domain/tool.js'
@@ -34,6 +35,22 @@ interface PendingRequest {
   reject: (error: Error) => void
   /** 当前请求独立的计时器，避免一个请求拖住所有请求。 */
   timer: NodeJS.Timeout
+}
+
+export type McpTimingPhase = 'spawn' | 'initialize' | 'tools/list' | 'total'
+
+export interface McpTiming {
+  serverName: string
+  phase: McpTimingPhase
+  elapsedMs: number
+}
+
+export interface McpLoadResult {
+  tools: McpTool[]
+  clients: McpStdioClient[]
+  diagnostics: string[]
+  timings: McpTiming[]
+  elapsedMs: number
 }
 
 export interface McpDiscoveredTool {
@@ -77,17 +94,26 @@ export class McpStdioClient {
    * @param config 已经经过 schema 校验和默认值填充的 Server 配置。
    * @param workspace 子进程的工作目录，使相对路径和项目本地命令按当前项目解析。
    */
-  static async connect(serverName: string, config: McpServerConfig, workspace: string): Promise<McpStdioClient> {
+  static async connect(
+    serverName: string,
+    config: McpServerConfig,
+    workspace: string,
+    onTiming?: (phase: 'spawn' | 'initialize', elapsedMs: number) => void,
+  ): Promise<McpStdioClient> {
     // MCP stdio 必须使用纯 JSON-RPC stdin/stdout 通道；shell=false 防止配置参数被重新解释。
+    const spawnStartedAt = performance.now()
     const child = spawn(config.command, config.args, {
       cwd: workspace,
       env: { ...process.env, ...config.env },
       shell: false,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
+    onTiming?.('spawn', performance.now() - spawnStartedAt)
     const client = new McpStdioClient(serverName, config, child)
     try {
+      const initializeStartedAt = performance.now()
       await client.initialize()
+      onTiming?.('initialize', performance.now() - initializeStartedAt)
       return client
     } catch (error) {
       await client.close()
@@ -276,27 +302,64 @@ export class McpTool implements Tool {
 export async function loadMcpTools(
   servers: Record<string, McpServerConfig>,
   workspace: string,
-): Promise<{ tools: McpTool[]; clients: McpStdioClient[]; diagnostics: string[] }> {
+): Promise<McpLoadResult> {
   // 返回 clients 供 Runtime 在结束或切换会话时显式回收子进程。
-  const tools: McpTool[] = []
-  const clients: McpStdioClient[] = []
-  const diagnostics: string[] = []
-  for (const [serverName, config] of Object.entries(servers)) {
-    if (!config.enabled) continue
-    let client: McpStdioClient | undefined
-    try {
-      client = await McpStdioClient.connect(serverName, config, workspace)
-      // 发现失败只隔离当前 Server，内置工具和其他 MCP Server 仍可继续启动。
-      const descriptions = await client.listTools()
-      clients.push(client)
-      // 发现阶段只创建合法描述；单个 Server 的异常由外层 catch 隔离，不影响其他 Server。
-      for (const description of descriptions) tools.push(new McpTool(serverName, client, description.name, description))
-    } catch (error) {
-      await client?.close()
-      diagnostics.push(`MCP Server ${serverName} 加载失败：${error instanceof Error ? error.message : String(error)}`)
-    }
+  const startedAt = performance.now()
+  const entries = Object.entries(servers).filter(([, config]) => config.enabled)
+  // 不同 Server 互不依赖，可以并行启动；单个任务内部仍保持握手和发现的顺序。
+  const results = await Promise.all(entries.map(([serverName, config]) => loadMcpServer(serverName, config, workspace)))
+  return {
+    // Promise.all 按输入顺序返回结果，保证并行后工具列表顺序仍然稳定。
+    tools: results.flatMap((result) => result.tools),
+    clients: results.flatMap((result) => (result.client ? [result.client] : [])),
+    diagnostics: results.flatMap((result) => result.diagnostics),
+    timings: results.flatMap((result) => result.timings),
+    elapsedMs: performance.now() - startedAt,
   }
-  return { tools, clients, diagnostics }
+}
+
+interface McpServerLoadResult {
+  tools: McpTool[]
+  client?: McpStdioClient
+  diagnostics: string[]
+  timings: McpTiming[]
+}
+
+async function loadMcpServer(
+  serverName: string,
+  config: McpServerConfig,
+  workspace: string,
+): Promise<McpServerLoadResult> {
+  const startedAt = performance.now()
+  const timings: McpTiming[] = []
+  const recordTiming = (phase: McpTimingPhase, elapsedMs: number): void => {
+    timings.push({ serverName, phase, elapsedMs })
+  }
+  let client: McpStdioClient | undefined
+  try {
+    client = await McpStdioClient.connect(serverName, config, workspace, (phase, elapsedMs) =>
+      recordTiming(phase, elapsedMs),
+    )
+    const discoveryStartedAt = performance.now()
+    // 发现失败只隔离当前 Server，内置工具和其他 MCP Server 仍可继续启动。
+    const descriptions = await client.listTools()
+    recordTiming('tools/list', performance.now() - discoveryStartedAt)
+    return {
+      tools: descriptions.map((description) => new McpTool(serverName, client!, description.name, description)),
+      client,
+      diagnostics: [],
+      timings,
+    }
+  } catch (error) {
+    await client?.close()
+    return {
+      tools: [],
+      diagnostics: [`MCP Server ${serverName} 加载失败：${error instanceof Error ? error.message : String(error)}`],
+      timings,
+    }
+  } finally {
+    recordTiming('total', performance.now() - startedAt)
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

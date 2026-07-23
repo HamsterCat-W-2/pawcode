@@ -182,7 +182,16 @@ async function main(): Promise<void> {
     const permissionManager = createPermissionManager(options)
     const context = await resolveContext(process.cwd(), config, systemPrompt)
     startupProfiler.mark('context')
-    const bundle = await createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager, context)
+    const bundle = await createRuntimeBundle(
+      session,
+      provider,
+      model,
+      maxTurns,
+      config,
+      permissionManager,
+      context,
+      startupProfiler,
+    )
     startupProfiler.mark('runtime')
     printStartupReport(startupProfiler)
     const sessionRecord = session.snapshot()
@@ -231,7 +240,16 @@ async function main(): Promise<void> {
   session ??= await createSession(store, provider, model, options.name)
   const context = await resolveContext(process.cwd(), config, systemPrompt)
   startupProfiler.mark('context')
-  const bundle = await createRuntimeBundle(session, provider, model, maxTurns, config, permissionManager, context)
+  const bundle = await createRuntimeBundle(
+    session,
+    provider,
+    model,
+    maxTurns,
+    config,
+    permissionManager,
+    context,
+    startupProfiler,
+  )
   startupProfiler.mark('runtime')
   printStartupReport(startupProfiler)
   await runInteractive(bundle, store, config, context, maxTurns, permissionManager, readline, resumed !== undefined)
@@ -281,6 +299,7 @@ async function createRuntimeBundle(
   config: PawCodeConfig,
   permissionManager: PermissionManager,
   context: ResolvedContext,
+  startupProfiler?: StartupProfiler,
 ): Promise<RuntimeBundle> {
   // 模型、工具和 Runtime 只在真正进入运行路径时加载；show-* 和 list 命令无需承担这些模块成本。
   const [
@@ -325,6 +344,13 @@ async function createRuntimeBundle(
   const { loadMcpTools } = await import('./mcp/mcp-client.js')
   // MCP Client 隶属于当前 Runtime；重建会话时由调用方先 close 旧 Runtime，避免子进程泄漏。
   const mcp = await loadMcpTools(config.mcp.servers, process.cwd())
+  if (startupProfiler) {
+    // 这些是 MCP 模块内部独立测量的耗时；并行 Server 的阶段时间不能当作主流程连续区间相加。
+    for (const timing of mcp.timings) {
+      startupProfiler.record(`mcp.${timing.serverName}.${timing.phase}`, timing.elapsedMs)
+    }
+    startupProfiler.record('mcp-total', mcp.elapsedMs)
+  }
   for (const diagnostic of mcp.diagnostics) console.error(`配置警告：${diagnostic}`)
   const contextProvider = new DeferredContextProvider(context, async (initialContext) => {
     const { DynamicContextProvider } = await import('./context/runtime-context-provider.js')
