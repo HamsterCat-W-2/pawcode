@@ -341,10 +341,25 @@ async function createRuntimeBundle(
     keepRecentTokens: config.contextKeepRecentTokens,
   })
   const record = session.snapshot()
+  const builtInTools = [
+    // 先实例化内置工具，以便 MCP 加载阶段知道哪些完整名称已经被占用。
+    new tools[0].ListFilesTool(),
+    new tools[1].ReadFileTool(),
+    new tools[2].GrepTool(),
+    new tools[3].WriteFileTool(),
+    new tools[4].ApplyPatchTool(),
+    new tools[5].RunCommandTool(),
+    new tools[6].GitDiffTool(),
+  ]
   const { loadMcpTools } = await import('./mcp/mcp-client.js')
   // MCP Client 隶属于当前 Runtime；重建会话时由调用方先 close 旧 Runtime，避免子进程泄漏。
-  const mcp = await loadMcpTools(config.mcp.servers, process.cwd())
+  const mcp = await loadMcpTools(
+    config.mcp.servers,
+    process.cwd(),
+    builtInTools.map((tool) => tool.definition.function.name),
+  )
   if (startupProfiler) {
+    // 外部测量结果只在显式 verbose 模式写入报告，普通用户不会看到额外启动日志。
     // 这些是 MCP 模块内部独立测量的耗时；并行 Server 的阶段时间不能当作主流程连续区间相加。
     for (const timing of mcp.timings) {
       startupProfiler.record(`mcp.${timing.serverName}.${timing.phase}`, timing.elapsedMs)
@@ -352,6 +367,7 @@ async function createRuntimeBundle(
     startupProfiler.record('mcp-total', mcp.elapsedMs)
   }
   for (const diagnostic of mcp.diagnostics) console.error(`配置警告：${diagnostic}`)
+  // 动态上下文提供器仍然延迟创建，MCP 加载不应重新引入上下文扫描重复开销。
   const contextProvider = new DeferredContextProvider(context, async (initialContext) => {
     const { DynamicContextProvider } = await import('./context/runtime-context-provider.js')
     return DynamicContextProvider.create(process.cwd(), config, systemPrompt, initialContext)
@@ -359,19 +375,7 @@ async function createRuntimeBundle(
   const runtime = new AgentRuntime({
     // MCP 工具与内置工具共用 ToolRegistry，因此权限、禁用工具和输出截断保持一致。
     model,
-    tools: new ToolRegistry(
-      [
-        new tools[0].ListFilesTool(),
-        new tools[1].ReadFileTool(),
-        new tools[2].GrepTool(),
-        new tools[3].WriteFileTool(),
-        new tools[4].ApplyPatchTool(),
-        new tools[5].RunCommandTool(),
-        new tools[6].GitDiffTool(),
-        ...mcp.tools,
-      ],
-      context.disabledTools,
-    ),
+    tools: new ToolRegistry([...builtInTools, ...mcp.tools], context.disabledTools),
     toolContext: {
       workspace: process.cwd(),
       maxOutputChars: config.maxToolOutputChars,
@@ -386,6 +390,7 @@ async function createRuntimeBundle(
     onContextCompacted: () => session.markCompacted(),
   })
   return {
+    // Runtime 持有的 close 是会话生命周期的唯一 MCP 回收入口。
     runtime,
     modelAdapter: model,
     session,

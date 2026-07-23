@@ -5,7 +5,7 @@
 ## 当前状态
 
 - 项目：Node.js、TypeScript、pnpm 编写的终端 AI 编程 Agent。
-- 版本：v0.5.0，v0.5.1 MCP Client 已完成第一阶段，v0.5.2 启动性能优化开发中。
+- 版本：v0.5.0，v0.5.1 MCP Client 已完成第一阶段，v0.5.2 启动性能已完成，v0.5.3 MCP stdio 稳定性已完成。
 - 项目路径：`pawcode`。
 - 分支：`codex/v0.5-project-context-config`。
 - 当前基线 HEAD 为 `6131c12`，分支 `codex/v0.5-project-context-config`；MCP stdio Client、技术文档和 Demo Server 已提交，后续性能优化工作区状态以实际 `git status` 为准，不得擅自删除、覆盖或提交用户文件。
@@ -79,7 +79,7 @@ c66abe8 refactor: split domain types by concept
 - v0.4.1：会话、`write_file` 和 `apply_patch` 使用同目录临时文件、`fsync` 和原子替换。
 - v0.4.1：权限确认响应 Esc/Ctrl+C 的 AbortSignal，stdout `EPIPE` 正常退出。
 
-设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md)、[v0.5-init-design.md](./v0.5-init-design.md)、[v0.5-init-full-design.md](./v0.5-init-full-design.md)、[v0.5.1-mcp-client-design.md](./v0.5.1-mcp-client-design.md) 和 [v0.5.2-mcp-startup-performance-design.md](./v0.5.2-mcp-startup-performance-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
+设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md)、[v0.5-init-design.md](./v0.5-init-design.md)、[v0.5-init-full-design.md](./v0.5-init-full-design.md)、[v0.5.1-mcp-client-design.md](./v0.5.1-mcp-client-design.md)、[v0.5.2-mcp-startup-performance-design.md](./v0.5.2-mcp-startup-performance-design.md) 和 [v0.5.3-mcp-stdio-stability-design.md](./v0.5.3-mcp-stdio-stability-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
 
 ## 必须保持的架构边界
 
@@ -443,6 +443,18 @@ v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用
 3. 补充并行加载、失败隔离、稳定排序和子进程回收测试。
 
 设计文档：[v0.5.2-mcp-startup-performance-design.md](./v0.5.2-mcp-startup-performance-design.md)。
+
+### v0.5.3：MCP stdio 稳定性
+
+已完成：
+
+1. 统一启动层、通道层、协议层和工具层错误语义。
+2. 补充进程提前退出、非法 JSON、JSON-RPC error 和各阶段超时处理。
+3. 加强 MCP 工具名、description 和 inputSchema 校验。
+4. 增加工具名冲突、失败隔离和资源回收测试。
+5. MCP Client 关闭流程支持进程已退出场景，避免重复等待 close 事件。
+
+设计文档：[v0.5.3-mcp-stdio-stability-design.md](./v0.5.3-mcp-stdio-stability-design.md)。
 
 ### v0.5.2：公共 Hooks 事件总线
 
