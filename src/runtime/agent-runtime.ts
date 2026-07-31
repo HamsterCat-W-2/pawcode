@@ -6,6 +6,7 @@ import { ToolRegistry } from '../tools/tool-registry.js'
 import type { AgentEvent } from './agent-event.js'
 import type { ContextCompactor } from './context-compactor.js'
 import type { RuntimeContextProvider } from '../context/runtime-context-provider.js'
+import type { SkillRegistry } from '../skills/skill-registry.js'
 export { systemPrompt } from './system-prompt.js'
 import { systemPrompt } from './system-prompt.js'
 
@@ -18,6 +19,8 @@ export interface AgentRuntimeOptions {
   // 项目上下文只在发给模型时覆盖 system prompt，不进入会话历史，避免私有规则被持久化或压缩。
   systemPrompt?: string
   contextProvider?: RuntimeContextProvider
+  /** 当前 Runtime 的显式 Skill 状态；只影响模型请求和工具可见性，不进入 Session 历史。 */
+  skillRegistry?: SkillRegistry
   compactor?: ContextCompactor
   onMessagesChanged?: (messages: Message[]) => Promise<void>
   onContextCompacted?: () => Promise<void>
@@ -87,7 +90,8 @@ export class AgentRuntime {
         for await (const event of this.options.model.stream({
           // 传递快照，避免适配器持有内部数组后被后续消息追加所影响。
           messages: this.modelMessages(),
-          tools: this.options.tools.definitions(this.options.contextProvider?.current().disabledTools),
+          // 路径规则与 Skill 的禁用集合取并集，模型看到的工具必须和执行入口使用同一限制。
+          tools: this.options.tools.definitions(this.disabledTools()),
           ...(signal ? { signal } : {}),
         })) {
           switch (event.type) {
@@ -174,7 +178,7 @@ export class AgentRuntime {
             call.function.name,
             call.function.arguments,
             toolContext,
-            decision?.context.disabledTools,
+            this.disabledTools(decision?.context.disabledTools),
           )
 
           this.messages.push({
@@ -215,7 +219,9 @@ export class AgentRuntime {
   private modelMessages(): Message[] {
     const messages = this.messagesSnapshot()
     const dynamicSystemPrompt = this.options.contextProvider?.current().systemPrompt
-    const prompt = dynamicSystemPrompt ?? this.options.systemPrompt
+    const basePrompt = dynamicSystemPrompt ?? this.options.systemPrompt
+    // Skill 仅包装本次模型请求的 system prompt，既不改写 Session 消息，也不覆盖项目上下文。
+    const prompt = basePrompt ? (this.options.skillRegistry?.systemPrompt(basePrompt) ?? basePrompt) : undefined
     if (!prompt) return messages
     const systemIndex = messages.findIndex((message) => message.role === 'system')
     if (systemIndex < 0) return [{ role: 'system', content: prompt }, ...messages]
@@ -223,6 +229,20 @@ export class AgentRuntime {
     if (!current) return messages
     messages[systemIndex] = { ...current, content: prompt }
     return messages
+  }
+
+  /**
+   * 将动态路径规则和当前 Skill 工具限制合并。available 工具由 Registry 提供，
+   * 因此这个 Runtime 不需要知道工具来自内置实现、MCP stdio 还是未来 HTTP MCP。
+   */
+  private disabledTools(contextDisabledTools = this.options.contextProvider?.current().disabledTools ?? []): string[] {
+    const skillDisabledTools = this.options.skillRegistry?.disabledTools(this.options.tools.names()) ?? []
+    return [...new Set([...contextDisabledTools, ...skillDisabledTools])]
+  }
+
+  /** CLI 激活 Skill 时用来校验 allowedTools；返回的名称不受当前临时禁用影响。 */
+  toolNames(): string[] {
+    return this.options.tools.names()
   }
 
   private async notifyMessagesChanged(): Promise<void> {

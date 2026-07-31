@@ -4,6 +4,8 @@ import type { ModelAdapter } from '../src/models/model-adapter.js'
 import type { ModelEvent } from '../src/models/model-event.js'
 import { AgentRuntime } from '../src/runtime/agent-runtime.js'
 import { ContextCompactor } from '../src/runtime/context-compactor.js'
+import { SkillRegistry } from '../src/skills/skill-registry.js'
+import type { SkillCatalog } from '../src/skills/skill-types.js'
 import type { Tool } from '../src/tools/tool.js'
 import { ToolRegistry } from '../src/tools/tool-registry.js'
 
@@ -112,6 +114,74 @@ describe('AgentRuntime', () => {
     expect(runtime.messagesSnapshot()[0]).toMatchObject({
       role: 'system',
       content: expect.not.stringContaining('项目私有规则'),
+    })
+  })
+
+  it('激活 Skill 后同时限制模型可见工具与实际工具执行，并且不写入会话消息', async () => {
+    const model = new ScriptedModel([
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: 'blocked-call',
+            type: 'function',
+            function: { name: 'write_file', arguments: '{}' },
+          },
+        ],
+      },
+      { content: '完成', toolCalls: [] },
+    ])
+    const writeTool: Tool = {
+      definition: {
+        type: 'function',
+        function: { name: 'write_file', description: '写入', parameters: { type: 'object' } },
+      },
+      async execute() {
+        return '不应执行'
+      },
+    }
+    const skills: SkillCatalog = {
+      skills: [
+        {
+          name: 'read-only',
+          description: '仅允许读取',
+          allowedTools: ['echo'],
+          instructions: '只能读取，不得写入。',
+          source: 'project',
+          path: '/workspace/.pawcode/skills/read-only.md',
+        },
+      ],
+      overridden: [],
+      diagnostics: [],
+    }
+    const registry = new SkillRegistry(skills)
+    registry.activate('read-only', ['echo', 'write_file'])
+    const runtime = new AgentRuntime({
+      model,
+      tools: new ToolRegistry([echoTool, writeTool]),
+      toolContext: { workspace: process.cwd(), maxOutputChars: 10_000 },
+      maxTurns: 2,
+      systemPrompt: '基础规则',
+      skillRegistry: registry,
+    })
+
+    for await (const _event of runtime.run('开始')) {
+      // 消费完整 run，断言模型请求和执行结果是否共用同一禁用集合。
+    }
+
+    expect(model.requests[0]?.tools.map((tool) => tool.function.name)).toEqual(['echo'])
+    expect(model.requests[0]?.messages[0]).toMatchObject({
+      role: 'system',
+      content: expect.stringContaining('<pawcode-skill name="read-only" source="project">'),
+    })
+    expect(model.requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      tool_call_id: 'blocked-call',
+      content: '工具执行失败：工具已被当前路径规则禁用：write_file',
+    })
+    expect(runtime.messagesSnapshot()[0]).toMatchObject({
+      role: 'system',
+      content: expect.not.stringContaining('只能读取'),
     })
   })
 

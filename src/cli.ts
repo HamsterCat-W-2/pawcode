@@ -31,6 +31,8 @@ import type { SessionSummary } from './sessions/session-schema.js'
 import { SessionStore } from './sessions/session-store.js'
 import type { ProjectInitEvent, ProjectSnapshot } from './project/project-initializer.js'
 import { PersistentMemoryStore, type MemoryScope } from './memory/memory-store.js'
+import { loadSkills } from './skills/skill-loader.js'
+import { SkillRegistry } from './skills/skill-registry.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -64,6 +66,8 @@ interface RuntimeBundle {
   session: SessionManager
   provider: string
   model: string
+  /** 当前交互进程共享的 Skill 目录快照与激活状态；不会写入 Session。 */
+  skills: SkillRegistry
   close: () => Promise<void>
 }
 
@@ -190,6 +194,8 @@ async function main(): Promise<void> {
       config,
       permissionManager,
       context,
+      // one-shot CLI 没有 `--skill` 参数，显式使用空注册表以保证不会隐式发现或激活 Skill。
+      SkillRegistry.empty(),
       startupProfiler,
     )
     startupProfiler.mark('runtime')
@@ -240,6 +246,9 @@ async function main(): Promise<void> {
   session ??= await createSession(store, provider, model, options.name)
   const context = await resolveContext(process.cwd(), config, systemPrompt)
   startupProfiler.mark('context')
+  // 仅交互模式读取 Skill 目录：one-shot 请求没有 `/skill` 命令，也不应承担额外文件扫描。
+  const skills = new SkillRegistry(await loadSkills(process.cwd()))
+  startupProfiler.mark('skills')
   const bundle = await createRuntimeBundle(
     session,
     provider,
@@ -248,6 +257,7 @@ async function main(): Promise<void> {
     config,
     permissionManager,
     context,
+    skills,
     startupProfiler,
   )
   startupProfiler.mark('runtime')
@@ -299,6 +309,7 @@ async function createRuntimeBundle(
   config: PawCodeConfig,
   permissionManager: PermissionManager,
   context: ResolvedContext,
+  skillRegistry: SkillRegistry,
   startupProfiler?: StartupProfiler,
 ): Promise<RuntimeBundle> {
   // 模型、工具和 Runtime 只在真正进入运行路径时加载；show-* 和 list 命令无需承担这些模块成本。
@@ -385,6 +396,8 @@ async function createRuntimeBundle(
     initialMessages: record.messages,
     systemPrompt: context.systemPrompt,
     contextProvider,
+    // Skill 只在 Runtime 的请求边界合成 prompt 与工具限制，不能直接执行任何动作。
+    skillRegistry,
     compactor,
     onMessagesChanged: (messages) => session.updateMessages(messages),
     onContextCompacted: () => session.markCompacted(),
@@ -396,6 +409,7 @@ async function createRuntimeBundle(
     session,
     provider,
     model: modelName,
+    skills: skillRegistry,
     // 关闭 Runtime 时统一回收所有 MCP Server，保证 one-shot 和交互模式行为一致。
     close: async () => Promise.all(mcp.clients.map((client) => client.close())).then(() => undefined),
   }
@@ -482,6 +496,16 @@ async function runInteractive(
         )
         continue
       }
+      if (input === '/skills') {
+        // 列表只读取启动时的目录快照，避免在一次会话中悄然加载刚被外部修改的指令。
+        renderSkills(bundle.skills)
+        continue
+      }
+      if (input === '/skill' || input.startsWith('/skill ')) {
+        // 激活状态属于当前交互 Runtime；命令本身不调用模型、工具或权限授权流程。
+        runSkillCommand(input, bundle)
+        continue
+      }
       const initCommand = parseProjectInitCommand(input)
       if (initCommand) {
         await runProjectInit(bundle.modelAdapter, permissionManager, signalState, initCommand.full, initCommand.update)
@@ -498,6 +522,8 @@ async function runInteractive(
       if (input === '/new') {
         // “本会话允许”属于内存授权，切换会话身份时必须主动清空。
         permissionManager.clearSessionRules()
+        // Skill 也属于当前会话内的显式临时状态，不能自动带入新会话。
+        bundle.skills.clear()
         const session = await createSession(store, bundle.provider, bundle.model)
         await bundle.close()
         bundle = await createRuntimeBundle(
@@ -508,6 +534,7 @@ async function runInteractive(
           config,
           permissionManager,
           context,
+          bundle.skills,
         )
         console.log(`已创建会话 ${session.snapshot().id}\n`)
         continue
@@ -542,6 +569,8 @@ async function runInteractive(
           }
           // 只有实际切换成功后才清空旧会话的内存授权；取消选择必须保持原会话不变。
           permissionManager.clearSessionRules()
+          // 恢复的是消息历史而非旧的隐式指令，Skill 必须由用户重新显式选择。
+          bundle.skills.clear()
           const record = session.snapshot()
           await bundle.close()
           bundle = await createRuntimeBundle(
@@ -552,6 +581,7 @@ async function runInteractive(
             config,
             permissionManager,
             context,
+            bundle.skills,
           )
           console.log(`已恢复会话 ${record.id}：${record.title}\n`)
           printSessionHistory(record.messages)
@@ -574,6 +604,8 @@ async function runInteractive(
       if (input === '/branch' || input.startsWith('/branch ')) {
         try {
           permissionManager.clearSessionRules()
+          // 分支复制历史但不复制 Skill 激活状态，避免分支在无提示下改变模型行为。
+          bundle.skills.clear()
           const name = input.slice('/branch'.length).trim() || undefined
           const session = await SessionManager.fork(store, bundle.session.snapshot(), name)
           const record = session.snapshot()
@@ -586,6 +618,7 @@ async function runInteractive(
             config,
             permissionManager,
             context,
+            bundle.skills,
           )
           console.log(`已创建会话分支 ${record.id}，原会话 ${record.parentSessionId}\n`)
         } catch (error) {
@@ -679,6 +712,73 @@ function parseProjectInitCommand(input: string): { full: boolean; update: boolea
   const flags = new Set(parts.slice(1))
   if ([...flags].some((flag) => flag !== '--full' && flag !== '--update')) return undefined
   return { full: flags.has('--full'), update: flags.has('--update') }
+}
+
+/** `/skill` 的最小命令语法；只接受查询、清除或单个稳定名称，避免把任意文本当作 Skill 名称。 */
+type SkillCommand = { type: 'status' } | { type: 'clear' } | { type: 'activate'; name: string }
+
+/** 解析 `/skill` 子命令，不在这里校验名称存在性，以便调用端给出统一的“未找到”提示。 */
+function parseSkillCommand(input: string): SkillCommand | undefined {
+  const parts = input.split(/\s+/)
+  if (parts[0] !== '/skill') return undefined
+  if (parts.length === 1) return { type: 'status' }
+  if (parts.length !== 2) return undefined
+  if (parts[1] === 'clear') return { type: 'clear' }
+  return { type: 'activate', name: parts[1] ?? '' }
+}
+
+/** 渲染发现目录快照，明确显示项目覆盖关系和不可用文件的诊断。 */
+function renderSkills(skills: SkillRegistry): void {
+  const available = skills.skills()
+  const overriddenNames = new Set(skills.overridden().map((skill) => skill.name))
+  console.log('\n可用 Skills：')
+  if (available.length === 0) console.log('- 暂无可用 Skill')
+  for (const skill of available) {
+    const overridden = skill.source === 'project' && overriddenNames.has(skill.name) ? '（覆盖 user）' : ''
+    console.log(`- ${skill.name} [${skill.source}]  ${skill.description}${overridden}`)
+  }
+  for (const diagnostic of skills.diagnostics()) console.error(`Skill 警告：${diagnostic}`)
+  console.log()
+}
+
+/** 处理显式激活、查询和清除；未知工具只告警，实际可用集合仍由 ToolRegistry 交集计算。 */
+function runSkillCommand(input: string, bundle: RuntimeBundle): void {
+  const command = parseSkillCommand(input)
+  if (!command) {
+    console.log('\n用法：/skills | /skill | /skill <name> | /skill clear\n')
+    return
+  }
+  if (command.type === 'status') {
+    const active = bundle.skills.current()
+    if (!active) {
+      console.log('\n当前未激活 Skill。使用 /skills 查看可用 Skill。\n')
+      return
+    }
+    const allowedTools = active.allowedTools
+    const toolSummary =
+      allowedTools === undefined ? '未设置（沿用路径规则）' : allowedTools.join(', ') || '无（禁止所有工具）'
+    console.log(`\n当前 Skill：${active.name} [${active.source}]\n工具限制：${toolSummary}\n`)
+    return
+  }
+  if (command.type === 'clear') {
+    bundle.skills.clear()
+    console.log('\n已清除当前 Skill。\n')
+    return
+  }
+  const activation = bundle.skills.activate(command.name, bundle.runtime.toolNames())
+  if (!activation) {
+    console.log(`\n未找到 Skill：${command.name}。使用 /skills 查看可用 Skill。\n`)
+    return
+  }
+  const toolSummary =
+    activation.skill.allowedTools === undefined
+      ? '未设置（沿用路径规则）'
+      : activation.skill.allowedTools.join(', ') || '无（禁止所有工具）'
+  console.log(`\n已激活 Skill：${activation.skill.name} [${activation.skill.source}]\n工具限制：${toolSummary}`)
+  if (activation.unknownTools.length > 0) {
+    console.error(`Skill 警告：当前未注册工具将不可用：${activation.unknownTools.join(', ')}`)
+  }
+  console.log()
 }
 
 type MemoryCommand =

@@ -25,6 +25,14 @@ export class ToolRegistry {
       .map((tool) => tool.definition)
   }
 
+  /**
+   * 返回所有已注册工具的完整名称，不受路径规则或 Skill 临时禁用影响。
+   * SkillRegistry 用这个稳定集合计算 allowedTools 的补集，避免自行了解内置或 MCP 工具来源。
+   */
+  names(): string[] {
+    return [...this.tools.keys()]
+  }
+
   contextTargets(name: string, argumentsJson: string, context: ToolContext): ContextTarget[] {
     const tool = this.tools.get(name)
     if (!tool?.contextTargets) return [{ path: '.', kind: 'cwd' }]

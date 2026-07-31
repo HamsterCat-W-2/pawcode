@@ -5,10 +5,10 @@
 ## 当前状态
 
 - 项目：Node.js、TypeScript、pnpm 编写的终端 AI 编程 Agent。
-- 版本：v0.5.0，v0.5.1 MCP Client 已完成第一阶段，v0.5.2 启动性能已完成，v0.5.3 MCP stdio 稳定性已完成。
+- 当前阶段：v0.5.1 MCP stdio Client、v0.5.2 启动性能、v0.5.3 稳定性和 v0.5.4 Skills MVP 均已完成；v0.5.4 的实现尚未提交，继续工作前先以实际 `git status` 为准。
 - 项目路径：`pawcode`。
 - 分支：`codex/v0.5-project-context-config`。
-- 当前基线 HEAD 为 `6131c12`，分支 `codex/v0.5-project-context-config`；MCP stdio Client、技术文档和 Demo Server 已提交，后续性能优化工作区状态以实际 `git status` 为准，不得擅自删除、覆盖或提交用户文件。
+- 当前基线 HEAD 为 `f8c69fb`，分支 `codex/v0.5-project-context-config`；MCP stdio Client、启动性能和稳定性改造均已提交。继续工作前以实际 `git status` 为准，不得擅自删除、覆盖或提交用户文件。
 - v0.4 会话持久化、恢复、历史回放、退出提示、Esc/Ctrl+C 交互、上下文压缩、NDJSON、`--verbose` 工具明细和交互 Banner，以及 v0.4.1 错误恢复加固均已合并到 `main`。
 - v0.4.1 错误恢复由提交 `19b0e6d` 完成，延续上下文文档由 `986fa20` 更新。
 - 公共可取消列表选择器以及 `/resume`、`pawcode --resume` 的 CLI 回归测试由提交 `b9c3848` 完成并已合并。
@@ -17,6 +17,9 @@
 v0.5 当前提交链：
 
 ```text
+f8c69fb feat: harden mcp stdio stability
+7139363 perf: optimize mcp startup
+6131c12 feat: add mcp stdio client
 d3915a9 chore: release v0.5.0
 cdbf57b perf: optimize startup initialization
 167b29d feat: add full project initialization
@@ -61,13 +64,14 @@ c66abe8 refactor: split domain types by concept
 - 项目级 `.pawcode/sessions` 会话保存、列表、恢复和工作区校验。
 - Session schema v1、Zod 磁盘校验、`0600` 权限和临时文件原子替换。
 - Claude Code 风格会话入口：`--continue/-c`、`--resume/-r [id|name]`、`--fork-session`、`--name/-n` 和 `--list-sessions`。
-- 交互会话命令：`/init`、`/init --full`、`/init --update`、`/init --full --update`、`/memory`、`/memory add`、`/memory update`、`/memory remove`、`/memory clear`、`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。`/init` 快速扫描项目，`/init --full` 按目录分块摘要大型项目；普通模式已有文件不会覆盖，显式 `--update` 只更新 `PAWCODE.md` 的唯一 PawCode 管理区。
+- 交互会话命令：`/init`、`/init --full`、`/init --update`、`/init --full --update`、`/memory`、`/memory add`、`/memory update`、`/memory remove`、`/memory clear`、`/skills`、`/skill [name|clear]`、`/new`、`/sessions`、`/resume [id|name]`、`/rename [name]`、`/branch [name]`。`/init` 快速扫描项目，`/init --full` 按目录分块摘要大型项目；普通模式已有文件不会覆盖，显式 `--update` 只更新 `PAWCODE.md` 的唯一 PawCode 管理区。
 - 分层 JSON 配置：用户级 `~/.pawcode/config.json`、项目级 `.pawcode/config.json`、本地级 `.pawcode/config.local.json`；API Key 只允许用户级配置，不再读取 `.env`。
 - 项目上下文：支持用户级/项目级 `PAWCODE.md`、兼容 `AGENTS.md`、`--show-context [path]` 和路径规则。
 - 动态上下文：工具声明目标路径，Runtime 在工具执行前刷新对应目录上下文；上下文变化只影响后续模型请求，不写入会话历史。
 - `/init` 项目初始化：通过 `ProjectInitializer` 扫描项目、应用默认忽略规则和 `.gitignore`，使用候选评分发现元数据，过滤敏感文件，经权限确认后生成根目录 `PAWCODE.md`；`/init --full` 增加完整文件索引、目录分块和逐块摘要汇总；`--update` 只替换管理区并展示变更预览。
 - 持久化记忆：用户级 `~/.pawcode/memory.json` 和项目级 `.pawcode/memory.json`，通过上下文解析器注入 system prompt；`/memory` 支持查看、添加、更新、删除和清空，记忆不会进入 Session 历史。
 - MCP Client：已实现第一阶段 stdio 配置、initialize、tools/list、tools/call、`mcp_<server>_<tool>` 映射、权限校验、超时和进程回收；配置与权限边界见 `docs/v0.5.1-mcp-client-design.md`。
+- Skills：交互启动时从 `~/.pawcode/skills/*.md` 与 `.pawcode/skills/*.md` 读取最小 Markdown/frontmatter 定义，项目级覆盖用户级；`/skills` 列表，`/skill <name>` 激活，`/skill clear` 清除。激活态只保存在内存，后续模型请求才注入正文，并将 `allowedTools` 与路径规则求交集；它不能绕过 `ToolRegistry` 或 `PermissionManager`，也不会写入 Session 历史。
 - 启动性能：模型与工具按需加载，动态上下文提供器延迟到首次工具调用前创建，会话恢复扫描单次读取；MCP Server 已改为并行加载，并可记录 spawn、initialize、tools/list 和总耗时，设计见 `docs/v0.5.2-mcp-startup-performance-design.md`。
 - 交互恢复会话时回放用户、助手和压缩摘要；`/exit` 或输入提示处 `Ctrl+C` 输出恢复命令；运行中的 `Esc`/`Ctrl+C` 取消请求，普通输入态 `Esc` 清空输入。公共可取消选择器让 `/resume` 中的 `Esc` 返回原会话输入提示，也让启动参数 `pawcode --resume` 中的 `Esc` 正常返回 shell。
 - 根据模型 context window 在完整用户轮次边界压缩旧历史，保留工具调用/result 对。
@@ -79,7 +83,7 @@ c66abe8 refactor: split domain types by concept
 - v0.4.1：会话、`write_file` 和 `apply_patch` 使用同目录临时文件、`fsync` 和原子替换。
 - v0.4.1：权限确认响应 Esc/Ctrl+C 的 AbortSignal，stdout `EPIPE` 正常退出。
 
-设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md)、[v0.5-init-design.md](./v0.5-init-design.md)、[v0.5-init-full-design.md](./v0.5-init-full-design.md)、[v0.5.1-mcp-client-design.md](./v0.5.1-mcp-client-design.md)、[v0.5.2-mcp-startup-performance-design.md](./v0.5.2-mcp-startup-performance-design.md) 和 [v0.5.3-mcp-stdio-stability-design.md](./v0.5.3-mcp-stdio-stability-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
+设计与验收标准见 [v0.3-design.md](./v0.3-design.md)、[v0.4-design.md](./v0.4-design.md)、[v0.4.1-error-recovery-design.md](./v0.4.1-error-recovery-design.md)、[v0.5-design.md](./v0.5-design.md)、[v0.5-dynamic-context-design.md](./v0.5-dynamic-context-design.md)、[v0.5-init-design.md](./v0.5-init-design.md)、[v0.5-init-full-design.md](./v0.5-init-full-design.md)、[v0.5.1-mcp-client-design.md](./v0.5.1-mcp-client-design.md)、[v0.5.2-mcp-startup-performance-design.md](./v0.5.2-mcp-startup-performance-design.md)、[v0.5.3-mcp-stdio-stability-design.md](./v0.5.3-mcp-stdio-stability-design.md) 和 [v0.5.4-skills-design.md](./v0.5.4-skills-design.md)，流式协议见 [streaming-output.md](./streaming-output.md)。
 
 ## 必须保持的架构边界
 
@@ -121,6 +125,12 @@ RuntimeContextProvider
  ↓ resolveContext + path rules
 动态 system prompt + ToolRegistry 动态禁用工具
 
+CLI
+ ↓ fixed user/project Skill directories
+SkillRegistry
+ ↓ request-only prompt wrapper + allowedTools complement
+AgentRuntime → ToolRegistry → PermissionManager
+
 /init
  ↓ ProjectInitializer
 WorkspaceFiles + ModelAdapter + PermissionManager
@@ -137,9 +147,9 @@ PAWCODE.md
 
 ## 协作与代码审查约定
 
-- 后续新增或修改代码必须补充便于 review 的中文注释。
-- 注释重点说明设计原因、协议或安全边界、非显然控制流，以及失败与兼容策略。
-- 不给显而易见的赋值和语法逐行加注释，避免注释噪声掩盖关键逻辑。
+- 后续新增或修改代码必须补充便于 review 的中文注释，注释量目标为 90%。
+- 注释应覆盖字段与参数含义、设计原因、协议或安全边界、非显然控制流，以及失败与兼容策略。
+- 用户没有明确要求时不得提交代码；获准提交时必须使用 Conventional Commits 格式。
 - 修改实现行为时同步更新相关注释，不能保留与代码不一致的过时说明。
 - 关键模块和公共接口应有职责说明；复杂分支应解释“为什么这样处理”。
 
@@ -436,7 +446,7 @@ v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用
 
 ### v0.5.2：MCP 启动性能
 
-进行中：
+已完成：
 
 1. 并行加载多个 MCP Server，保持单个 Server 内部握手和工具发现顺序。
 2. 记录 spawn、initialize、tools/list、单 Server total 和 MCP total 耗时。
@@ -456,17 +466,23 @@ v0.5 的配置、上下文和 `/init` 主流程已经完成。后续继续沿用
 
 设计文档：[v0.5.3-mcp-stdio-stability-design.md](./v0.5.3-mcp-stdio-stability-design.md)。
 
-### v0.5.2：公共 Hooks 事件总线
+### v0.5.4：Skills 与自定义命令
+
+已实现（当前工作区改动尚未提交）：
+
+1. 固定发现用户级 `~/.pawcode/skills/*.md` 与项目级 `.pawcode/skills/*.md`；非递归、普通文件、32 KiB 上限和最小 frontmatter 校验。
+2. 项目级覆盖同名用户级；同一范围重名时全部排除并输出诊断，`/skills` 显示可用项、来源、覆盖关系和无效文件告警。
+3. `/skill` 查询状态，`/skill <name>` 显式激活，`/skill clear` 清除；`/new`、`/resume`、`/branch` 与进程重启均不继承激活态。
+4. Skill 正文仅在后续模型请求中以 `<pawcode-skill>` 边界注入，`allowedTools` 同时限制模型可见工具与执行入口；它只会收紧既有路径规则和权限结果。
+5. 覆盖目录优先级、无效/超大文件、重名、prompt 注入、模型工具可见性和执行限制的自动测试。
+
+设计文档：[v0.5.4-skills-design.md](./v0.5.4-skills-design.md)。
+
+### v0.5.5：公共 Hooks 事件总线
 
 1. 先定义稳定事件和输入输出协议，再实现命令型 Hook。
 2. 首批覆盖 `SessionStart`、`SessionStop`、`PreToolUse`、`PostToolUse`、`PreCompact` 和 `PostCompact`。
 3. Hook 失败、超时、取消及是否允许阻断操作必须有明确语义；人类输出与 NDJSON 继续共用结构化事件。
-
-### v0.5.3：Skills 与自定义命令
-
-1. 使用 Markdown 和 frontmatter 描述命令、用途、允许工具及上下文策略。
-2. 支持项目级和用户级发现，并采用按需加载，避免把所有 Skill 内容常驻上下文。
-3. Skill 调用仍受现有权限和工作区边界约束；脚本和辅助文件需要可追踪的来源信息。
 
 ### v0.6：子 Agent 与 worktree 隔离
 
@@ -485,9 +501,11 @@ IDE 插件、插件市场、CI 集成和远程会话属于更后期的平台化�
 ## 新对话起始提示
 
 ```text
-请先阅读 docs/continuation-context.md，并按需阅读 docs/v0.4.1-error-recovery-design.md、
-docs/v0.4-design.md、docs/v0.3-design.md 和 docs/streaming-output.md，然后检查 git status --short --branch。保持 PawCode
-Domain 与 PiAiModelAdapter 的边界；所有副作用必须经过 ToolRegistry 和
-PermissionManager。新增或修改代码必须添加便于 review 的中文注释；修改后运行格式、
-类型、测试和构建验证。当前开发基线在 `codex/v0.5-project-context-config`，下一步优先补强大型项目的 `/init` 分块分析、上下文诊断和已有文件更新策略。
+请先阅读 docs/continuation-context.md，并按需阅读 docs/v0.5.4-skills-design.md、
+docs/v0.5.3-mcp-stdio-stability-design.md、docs/v0.4.1-error-recovery-design.md、docs/v0.4-design.md、
+docs/v0.3-design.md 和 docs/streaming-output.md，然后检查 git status --short --branch。保持 PawCode Domain
+与 PiAiModelAdapter 的边界；所有副作用必须经过 ToolRegistry 和 PermissionManager。Skill 只能作为
+请求期上下文与工具限制，不能执行脚本、写入 Session 或绕过权限。新增或修改代码必须添加便于 review 的中文
+注释；修改后运行格式、类型、测试和构建验证。当前开发基线在 `codex/v0.5-project-context-config`，下一步优先
+定义 v0.5.5 公共 Hooks 事件协议，并评估 MCP Streamable HTTP 的独立设计。
 ```
