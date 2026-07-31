@@ -81,7 +81,8 @@ export class DynamicContextProvider implements RuntimeContextProvider {
     // CLI 启动时已经解析过根上下文；复用快照可以避免同一工作区启动阶段重复读盘。
     const context =
       initialContext ?? (await resolveContext(workspace, config, baseSystemPrompt, { targetPaths: ['.'] }))
-    return new DynamicContextProvider(workspace, config, baseSystemPrompt, context, fingerprint(context, ['.'], config))
+    // 初始快照与后续工具快照使用同一“有效上下文”指纹；目标路径只是重新解析的输入，不是展示刷新的理由。
+    return new DynamicContextProvider(workspace, config, baseSystemPrompt, context, fingerprint(context))
   }
 
   initial(): ResolvedContext {
@@ -101,7 +102,8 @@ export class DynamicContextProvider implements RuntimeContextProvider {
     const targetPaths = normalizeTargets(this.workspace, targets)
     try {
       const next = await resolveContext(this.workspace, this.config, this.baseSystemPrompt, { targetPaths })
-      const nextFingerprint = fingerprint(next, targetPaths, this.config)
+      // 即使每次工具目标不同，也必须重新解析路径规则；但只有解析结果改变才通知模型和终端。
+      const nextFingerprint = fingerprint(next)
       const updated = nextFingerprint !== this.fingerprint
       if (updated) {
         this.replaceContext(next, nextFingerprint)
@@ -147,13 +149,26 @@ function normalizeTarget(workspace: string, value: string): string | undefined {
   return normalized || '.'
 }
 
-function fingerprint(context: ResolvedContext, targetPaths: string[], config: PawCodeConfig): string {
+/**
+ * 为“会影响后续模型请求或工具执行”的解析结果生成指纹。
+ * targetPaths 和完整配置仅是计算输入：它们变化而结果不变时不应产生 `context_updated` 噪声。
+ */
+function fingerprint(context: ResolvedContext): string {
   return createHash('sha256')
     .update(
       JSON.stringify({
-        targetPaths,
-        config,
-        sources: context.sources.map((source) => ({ path: source.path, hash: source.hash, enabled: source.enabled })),
+        // system prompt 覆盖正文、附加配置和命中路径规则，是模型可见上下文的完整投影。
+        systemPrompt: context.systemPrompt,
+        // 来源元数据仍参与比较，确保 CLI 的 addedSources/removedSources 事件与快照一致。
+        sources: context.sources.map((source) => ({
+          kind: source.kind,
+          path: source.path,
+          relativePath: source.relativePath,
+          hash: source.hash,
+          enabled: source.enabled,
+          memoryEntries: source.memoryEntries,
+          reason: source.reason,
+        })),
         disabledTools: context.disabledTools,
         diagnostics: context.diagnostics,
       }),

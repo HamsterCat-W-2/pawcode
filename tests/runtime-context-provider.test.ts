@@ -42,6 +42,29 @@ describe('动态运行时上下文', () => {
     expect(provider.current().systemPrompt).toContain('src 规则')
   })
 
+  it('仅工具目标路径变化但有效上下文相同时不报告刷新', async () => {
+    const root = await fixture()
+    await writeFile(path.join(root, 'PAWCODE.md'), '所有文件共用的根规则')
+    await mkdir(path.join(root, 'src'), { recursive: true })
+    const provider = await DynamicContextProvider.create(
+      root,
+      loadConfig({ model: { name: 'test-model' } }),
+      '基础规则',
+    )
+
+    // 两个文件路径都会触发重新解析，验证没有把 targetPaths 本身错误地当作上下文变化。
+    const first = await provider.beforeToolCall('read_file', '{}', { workspace: root, maxOutputChars: 1_000 }, [
+      { path: 'src/first.ts', kind: 'file' },
+    ])
+    const second = await provider.beforeToolCall('read_file', '{}', { workspace: root, maxOutputChars: 1_000 }, [
+      { path: 'src/second.ts', kind: 'file' },
+    ])
+
+    expect(first.updated).toBe(false)
+    expect(second.updated).toBe(false)
+    expect(second.context.systemPrompt).toContain('所有文件共用的根规则')
+  })
+
   it('非法目标路径回退到工作区上下文，不让路径输入越过工作区', async () => {
     const root = await fixture()
     await writeFile(path.join(root, 'PAWCODE.md'), '根规则')
